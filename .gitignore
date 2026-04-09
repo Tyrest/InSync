@@ -209,8 +209,11 @@ __marimo__/
 # Node modules
 node_modules/
 
+# Backend data
+backend/data/
+
 # Volumes
-insync-data/
-jellyfin-cache/
-jellyfin-config/
-jellyfin-music/
+volumes/insync-data/
+volumes/jellyfin-cache/
+volumes/jellyfin-config/
+volumes/jellyfin-music/
