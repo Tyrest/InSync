@@ -1,3 +1,4 @@
+import secrets
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -62,6 +63,26 @@ class AppState:
         else:
             db.add(AppConfig(key="jellyfin_api_key", value=key_value))
         db.commit()
+
+    def bootstrap_jwt_secret(self, db: Session) -> str:
+        """Resolve and persist JWT secret (DB > env > generated)."""
+        settings = get_settings()
+        row = db.scalar(select(AppConfig).where(AppConfig.key == "jwt_secret"))
+        if row and row.value:
+            settings.jwt_secret = row.value
+            return row.value
+
+        effective_secret = settings.jwt_secret.strip() if settings.jwt_secret else ""
+        if not effective_secret:
+            effective_secret = secrets.token_urlsafe(48)
+
+        settings.jwt_secret = effective_secret
+        if row:
+            row.value = effective_secret
+        else:
+            db.add(AppConfig(key="jwt_secret", value=effective_secret))
+        db.commit()
+        return effective_secret
 
 
 app_state = AppState()

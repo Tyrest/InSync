@@ -70,3 +70,22 @@ Mount `./jellyfin-music` into Jellyfin as a music library path too.
    - `JELLYFIN_API_KEY` — your Jellyfin API key
 
    the app writes them into the database on startup so you can skip the Setup wizard. If the database already has Jellyfin rows (e.g. from a previous wizard save on a persisted volume), env vars are **not** overwritten.
+
+### JWT behavior (zero-config)
+
+- On startup, InSync resolves JWT signing secret in this order:
+  1. `jwt_secret` already stored in app DB (`/data/music_sync.sqlite3`)
+  2. `JWT_SECRET` environment variable (if provided)
+  3. auto-generated random secret
+- If no DB value exists yet, InSync persists the resolved secret into the DB so restarts keep sessions stable.
+- If you delete `/data` (or use a fresh empty volume), a new JWT secret is generated and existing sessions become invalid.
+
+### Sensitive settings storage
+
+Admin-configured secrets are stored in plaintext in the app SQLite database under `/data/music_sync.sqlite3` (for example: Jellyfin API key, OAuth client secrets, webhook secret, and JWT secret).
+
+Recommended safeguards for self-hosting:
+
+- Restrict host filesystem permissions on the mounted `/data` directory.
+- Use encrypted disk/volume storage where possible.
+- Treat backups containing `/data` as sensitive material.
