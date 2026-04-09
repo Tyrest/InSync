@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AnyHttpUrl, computed_field
+from pydantic import AnyHttpUrl, Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     music_dir: Path = Path("./music")
     database_url: str | None = None
-    jwt_secret: str = "change-me"
+    jwt_secret: str = Field(default_factory=lambda: "")
     jwt_algorithm: str = "HS256"
     jwt_exp_minutes: int = 60
     jellyfin_url: AnyHttpUrl | None = None

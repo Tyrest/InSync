@@ -30,6 +30,7 @@ async def lifespan(_: FastAPI):
     settings.music_dir.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
+        app_state.bootstrap_jwt_secret(db)
         app_state.seed_jellyfin_from_env_if_db_incomplete(db)
         app_state.hydrate_jellyfin_from_db(db)
         app_state.hydrate_audio_config_from_db(db)
