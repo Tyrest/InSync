@@ -47,7 +47,6 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="InSync",
     version="0.1.0",
-    root_path=settings.normalized_base_url if settings.normalized_base_url != "/" else "",
     lifespan=lifespan,
 )
 app.include_router(api_router)
