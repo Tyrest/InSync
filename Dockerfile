@@ -3,7 +3,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
-ARG VITE_BASE_URL=/
+ARG VITE_BASE_URL=/__INSYNC_BASE__/
 ENV VITE_BASE_URL=${VITE_BASE_URL}
 RUN npm run build
 

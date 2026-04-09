@@ -71,6 +71,27 @@ Mount `./jellyfin-music` into Jellyfin as a music library path too.
 
    the app writes them into the database on startup so you can skip the Setup wizard. If the database already has Jellyfin rows (e.g. from a previous wizard save on a persisted volume), env vars are **not** overwritten.
 
+### `BASE_URL` for reverse-proxy subpaths
+
+The same published image supports both root and subpath deployments at runtime (no rebuild required).
+
+- Root deploy: `BASE_URL=/`
+- Subpath deploy: `BASE_URL=/insync`
+
+Example:
+
+```bash
+docker run -d \
+  -p 8090:8080 \
+  -e BASE_URL=/insync \
+  -v ./insync-data:/data \
+  -v ./jellyfin-music:/music \
+  insync
+```
+
+If you run behind a reverse proxy, make sure requests under `/insync` are forwarded to this container.
+InSync accepts both direct `/api` + `/assets` paths and `/insync/api` + `/insync/assets` when `BASE_URL=/insync`.
+
 ### JWT behavior (zero-config)
 
 - On startup, InSync resolves JWT signing secret in this order:

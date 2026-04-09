@@ -1,8 +1,10 @@
-const base = (window as { __BASE_URL__?: string }).__BASE_URL__ ?? import.meta.env.BASE_URL;
+import { getBaseUrl } from "../config/baseUrl";
+
+const base = getBaseUrl();
 
 /** Full URL for the login route (respects Vite ``BASE_URL`` / subpath deploys). */
 export function getLoginUrl(): string {
-  const prefix = import.meta.env.BASE_URL.replace(/\/?$/, "");
+  const prefix = base === "/" ? "" : base;
   const path = `${prefix}/login`;
   return `${window.location.origin}${path}`;
 }

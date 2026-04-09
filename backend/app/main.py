@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import api_router
@@ -15,6 +15,7 @@ from app.state import app_state
 
 settings = get_settings()
 _log = logging.getLogger(__name__)
+_FRONTEND_BASE_PLACEHOLDER = "/__INSYNC_BASE__/"
 
 
 @asynccontextmanager
@@ -50,10 +51,33 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(api_router)
+if settings.normalized_base_url != "/":
+    app.include_router(api_router, prefix=settings.normalized_base_url)
 
 static_dir = Path(__file__).resolve().parents[1] / "static"
 if static_dir.exists():
     app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")
+    if settings.normalized_base_url != "/":
+        app.mount(
+            f"{settings.normalized_base_url}/assets",
+            StaticFiles(directory=static_dir / "assets"),
+            name="assets-subpath",
+        )
+
+
+def _runtime_base_prefix() -> str:
+    return "" if settings.normalized_base_url == "/" else settings.normalized_base_url
+
+
+def _render_spa_html(index_html: str) -> str:
+    base_prefix = _runtime_base_prefix()
+    asset_prefix = "/" if not base_prefix else f"{base_prefix}/"
+    html = index_html.replace(_FRONTEND_BASE_PLACEHOLDER, asset_prefix)
+    runtime_base = base_prefix or "/"
+    runtime_script = f'<script>window.__BASE_URL__ = "{runtime_base}";</script>'
+    if "</head>" in html:
+        return html.replace("</head>", f"  {runtime_script}\n</head>", 1)
+    return f"{runtime_script}\n{html}"
 
 
 @app.get("/health")
@@ -66,4 +90,5 @@ def spa(full_path: str):
     if not static_dir.exists():
         return JSONResponse({"message": f"API running (path={full_path})"})
     index = static_dir / "index.html"
-    return FileResponse(index)
+    html = _render_spa_html(index.read_text(encoding="utf-8"))
+    return HTMLResponse(content=html)
