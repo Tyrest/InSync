@@ -1,0 +1,27 @@
+services:
+  insync:
+    build: .
+    ports:
+      - "8090:8080"
+    environment:
+      BASE_URL: /
+      JWT_SECRET: please-change-me
+      LOG_LEVEL: INFO
+      JELLYFIN_URL: http://jellyfin:8096
+      TZ: America/New_York
+    volumes:
+      - ./volumes/insync-data:/data
+      - ./volumes/jellyfin-music:/music
+    depends_on:
+      - jellyfin
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    ports:
+      - "8096:8096"
+    environment:
+      TZ: America/New_York
+    volumes:
+      - ./volumes/jellyfin-config:/config
+      - ./volumes/jellyfin-cache:/cache
+      - ./volumes/jellyfin-music:/music:ro
