@@ -37,7 +37,7 @@ npm run dev
 Pull the pre-built image from GHCR:
 
 ```bash
-docker pull ghcr.io/Tyrest/insync:latest
+docker pull ghcr.io/tyrest/insync:latest
 ```
 
 Or build locally:
