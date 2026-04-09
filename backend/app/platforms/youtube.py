@@ -8,6 +8,25 @@ from app.platforms.base import PlatformConnector, PlaylistInfo, TrackInfo
 from ytmusicapi import YTMusic
 
 
+def _oauth_error_message(response: httpx.Response) -> str:
+    """Return a concise OAuth error string from Google's token endpoint."""
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text[:200] if text else f"HTTP {response.status_code}"
+
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        desc = payload.get("error_description")
+        if err and desc:
+            return f"{err}: {desc}"
+        if err:
+            return str(err)
+        return str(payload)[:200]
+    return str(payload)[:200]
+
+
 class YouTubeConnector(PlatformConnector):
     name = "youtube"
     auth_base_url = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -52,18 +71,22 @@ class YouTubeConnector(PlatformConnector):
         if not code:
             raise ValueError("Missing OAuth code")
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                self.token_url,
-                data={
-                    "code": code,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "redirect_uri": redirect_uri,
-                    "grant_type": "authorization_code",
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            response.raise_for_status()
+            try:
+                response = await client.post(
+                    self.token_url,
+                    data={
+                        "code": code,
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "redirect_uri": redirect_uri,
+                        "grant_type": "authorization_code",
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = _oauth_error_message(exc.response)
+                raise ValueError(f"Google OAuth token exchange failed: {detail}") from exc
             data = response.json()
         return {
             "access_token": data["access_token"],
@@ -89,17 +112,21 @@ class YouTubeConnector(PlatformConnector):
             return credentials
 
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                self.token_url,
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                    "grant_type": "refresh_token",
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            response.raise_for_status()
+            try:
+                response = await client.post(
+                    self.token_url,
+                    data={
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "refresh_token": refresh_token,
+                        "grant_type": "refresh_token",
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = _oauth_error_message(exc.response)
+                raise ValueError(f"Google OAuth refresh failed: {detail}") from exc
             data = response.json()
         credentials["access_token"] = data["access_token"]
         credentials["expires_at"] = int(datetime.now(UTC).timestamp()) + int(data.get("expires_in", 3600))
