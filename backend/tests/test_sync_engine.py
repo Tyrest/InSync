@@ -114,9 +114,7 @@ def test_mark_task_terminal_session_source_invariant(status: str, error_message:
         task = session.get(DownloadTask, task_id)
         assert task is not None, "Task row should still exist after _mark_task_terminal"
 
-        assert task.status == status, (
-            f"Expected task.status={status!r}, got {task.status!r}"
-        )
+        assert task.status == status, f"Expected task.status={status!r}, got {task.status!r}"
         assert task.error_message == error_message, (
             f"Expected task.error_message={error_message!r}, got {task.error_message!r}"
         )
@@ -125,9 +123,7 @@ def test_mark_task_terminal_session_source_invariant(status: str, error_message:
         completed_at = task.completed_at
         if completed_at.tzinfo is None:
             completed_at = completed_at.replace(tzinfo=UTC)
-        assert completed_at >= before, (
-            "task.completed_at should be >= the timestamp recorded before the call"
-        )
+        assert completed_at >= before, "task.completed_at should be >= the timestamp recorded before the call"
     finally:
         session.close()
 
@@ -135,6 +131,7 @@ def test_mark_task_terminal_session_source_invariant(status: str, error_message:
 # ---------------------------------------------------------------------------
 # Property 9: _persist_downloaded_track — session source invariant
 # ---------------------------------------------------------------------------
+
 
 @given(
     title=st.text(min_size=1, max_size=50, alphabet=st.characters(whitelist_categories=("Lu", "Ll", "Nd", "Zs"))),
@@ -225,21 +222,15 @@ def test_persist_downloaded_track_session_source_invariant(
         assert track.source_id == source_id, f"Expected track.source_id={source_id!r}, got {track.source_id!r}"
 
         # --- Assert SyncedPlaylistTrack rows ---
-        spt_rows = session.scalars(
-            select(SyncedPlaylistTrack).where(SyncedPlaylistTrack.track_id == track.id)
-        ).all()
-        assert len(spt_rows) == num_slots, (
-            f"Expected {num_slots} SyncedPlaylistTrack row(s), got {len(spt_rows)}"
-        )
+        spt_rows = session.scalars(select(SyncedPlaylistTrack).where(SyncedPlaylistTrack.track_id == track.id)).all()
+        assert len(spt_rows) == num_slots, f"Expected {num_slots} SyncedPlaylistTrack row(s), got {len(spt_rows)}"
 
         # Verify each slot has the correct playlist_id and position
         spt_by_playlist = {row.synced_playlist_id: row for row in spt_rows}
         for pos, pid in enumerate(playlist_ids):
             assert pid in spt_by_playlist, f"Missing SyncedPlaylistTrack for playlist_id={pid}"
             row = spt_by_playlist[pid]
-            assert row.position == pos, (
-                f"Expected position={pos} for playlist_id={pid}, got {row.position}"
-            )
+            assert row.position == pos, f"Expected position={pos} for playlist_id={pid}, got {row.position}"
     finally:
         session.close()
 
@@ -247,6 +238,7 @@ def test_persist_downloaded_track_session_source_invariant(
 # ---------------------------------------------------------------------------
 # Property 1: Full-user sync processes every enabled playlist
 # ---------------------------------------------------------------------------
+
 
 @given(num_playlists=st.integers(min_value=1, max_value=5))
 @settings(max_examples=20)
@@ -295,8 +287,7 @@ def test_full_user_sync_processes_every_enabled_playlist(num_playlists: int) -> 
 
         # --- Build PlaylistInfo objects matching the DB rows (empty track lists for speed) ---
         playlist_infos = [
-            PlaylistInfo(playlist_id=pid, name=f"Playlist {pid}", tracks=[])
-            for pid in playlist_ids_on_platform
+            PlaylistInfo(playlist_id=pid, name=f"Playlist {pid}", tracks=[]) for pid in playlist_ids_on_platform
         ]
 
         # --- Mock connector ---
@@ -360,6 +351,7 @@ def test_full_user_sync_processes_every_enabled_playlist(num_playlists: int) -> 
 # ---------------------------------------------------------------------------
 # Property 2: Per-playlist sync outcome is independent of call path
 # ---------------------------------------------------------------------------
+
 
 def _build_sync_engine_with_session(session: Session, playlist_info: "PlaylistInfo"):
     """Build a SyncEngine whose db_factory always returns the given session and whose
@@ -470,9 +462,7 @@ def test_per_playlist_outcome_independent_of_call_path(num_tracks: int) -> None:
         engine_full = _build_sync_engine_with_session(session_full, playlist_info_full)
         asyncio.run(engine_full.run_user_sync(session_full, user_id_full))
 
-        full_tasks = session_full.scalars(
-            select(DownloadTask).where(DownloadTask.user_id == user_id_full)
-        ).all()
+        full_tasks = session_full.scalars(select(DownloadTask).where(DownloadTask.user_id == user_id_full)).all()
         full_source_ids = sorted(t.source_id for t in full_tasks)
     finally:
         session_full.close()
@@ -485,9 +475,7 @@ def test_per_playlist_outcome_independent_of_call_path(num_tracks: int) -> None:
         engine_single = _build_sync_engine_with_session(session_single, playlist_info_single)
         asyncio.run(engine_single.run_single_playlist_sync(user_id_single, synced_playlist_id_single))
 
-        single_tasks = session_single.scalars(
-            select(DownloadTask).where(DownloadTask.user_id == user_id_single)
-        ).all()
+        single_tasks = session_single.scalars(select(DownloadTask).where(DownloadTask.user_id == user_id_single)).all()
         single_source_ids = sorted(t.source_id for t in single_tasks)
     finally:
         session_single.close()
@@ -569,8 +557,7 @@ def test_sync_continues_after_per_playlist_failure(failing_index: int) -> None:
 
         # --- Build PlaylistInfo objects (empty track lists for speed) ---
         playlist_infos = [
-            PlaylistInfo(playlist_id=pid, name=f"Playlist {pid}", tracks=[])
-            for pid in playlist_platform_ids
+            PlaylistInfo(playlist_id=pid, name=f"Playlist {pid}", tracks=[]) for pid in playlist_platform_ids
         ]
 
         # --- Mock connector ---
@@ -666,8 +653,7 @@ def test_sync_continues_after_per_playlist_failure(failing_index: int) -> None:
             if i == failing_index:
                 # The failing playlist should NOT have last_synced set
                 assert sp.last_synced is None, (
-                    f"Failing playlist {pid!r} (index {i}) should have last_synced=None, "
-                    f"but got {sp.last_synced}"
+                    f"Failing playlist {pid!r} (index {i}) should have last_synced=None, but got {sp.last_synced}"
                 )
             else:
                 # Non-failing playlists SHOULD have last_synced set

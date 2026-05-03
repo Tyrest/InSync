@@ -44,8 +44,6 @@ def test_set_setting_upsert_is_idempotent(key: str, value1: str, value2: str) ->
         assert row_count == 1, f"Expected exactly 1 row for key {key!r}, got {row_count}"
 
         stored_value = db.scalar(select(AppConfig.value).where(AppConfig.key == key))
-        assert stored_value == value2, (
-            f"Expected stored value {value2!r} for key {key!r}, got {stored_value!r}"
-        )
+        assert stored_value == value2, f"Expected stored value {value2!r} for key {key!r}, got {stored_value!r}"
     finally:
         db.close()
