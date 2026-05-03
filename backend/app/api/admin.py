@@ -94,7 +94,7 @@ def system_info(_: User = Depends(require_admin), db: Session = Depends(get_db))
 
 class AdminSettingsUpdate(BaseModel):
     download_concurrency: int | None = None
-    sync_hour_utc: int | None = None
+    sync_hour: int | None = None
     jellyfin_url: str | None = None
     jellyfin_api_key: str | None = None
     spotify_client_id: str | None = None
@@ -173,6 +173,6 @@ def update_settings(
 
     hydrate_jellyfin_from_db(db)
     hydrate_audio_config_from_db(db)
-    if app_state.scheduler and ("sync_hour_utc" in changes or "server_timezone" in changes):
+    if app_state.scheduler and ("sync_hour" in changes or "server_timezone" in changes):
         app_state.scheduler.reschedule()
     return SettingsUpdateResponse(status="ok")

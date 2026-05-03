@@ -70,10 +70,10 @@ class SchedulerService:
 
     def start(self) -> None:
         settings = get_settings()
-        trigger = CronTrigger(hour=settings.sync_hour_utc, minute=0, timezone=self._tz)
+        trigger = CronTrigger(hour=settings.sync_hour, minute=0, timezone=self._tz)
         self.scheduler.add_job(self._run_daily_sync, trigger=trigger, id="daily_sync")
         self.scheduler.start()
-        log.info("Scheduler started: daily_sync at %s:00 (%s)", settings.sync_hour_utc, self._tz)
+        log.info("Scheduler started: daily_sync at %s:00 (%s)", settings.sync_hour, self._tz)
 
     def shutdown(self) -> None:
         if self.scheduler.running:
@@ -87,6 +87,6 @@ class SchedulerService:
         """Re-read timezone + hour from config and reschedule the daily sync job."""
         self._tz = self._resolve_tz()
         settings = get_settings()
-        trigger = CronTrigger(hour=settings.sync_hour_utc, minute=0, timezone=self._tz)
+        trigger = CronTrigger(hour=settings.sync_hour, minute=0, timezone=self._tz)
         self.scheduler.reschedule_job("daily_sync", trigger=trigger)
-        log.info("Scheduler rescheduled: daily_sync at %s:00 (%s)", settings.sync_hour_utc, self._tz)
+        log.info("Scheduler rescheduled: daily_sync at %s:00 (%s)", settings.sync_hour, self._tz)

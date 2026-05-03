@@ -44,7 +44,7 @@ def list_playlists(current_user: User = Depends(get_current_user), db: Session =
                 platform=item.platform,
                 name=item.platform_playlist_name,
                 enabled=item.enabled,
-                last_synced=str(item.last_synced) if item.last_synced else None,
+                last_synced=item.last_synced.isoformat() if item.last_synced else None,
             )
             for item in items
         ]
