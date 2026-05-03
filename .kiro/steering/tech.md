@@ -46,6 +46,9 @@ uv run ruff check                # lint
 uv run ruff check --fix          # lint + auto-fix
 uv run ty check                  # type check
 uv run pytest                    # run tests
+
+# Run lint + type check in parallel (faster CI)
+uv run ruff format & uv run ruff check & uv run ty check & wait
 ```
 
 ### Frontend (run from `frontend/`)
