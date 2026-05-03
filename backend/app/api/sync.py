@@ -140,8 +140,8 @@ def download_failures(
                 artist=task.artist,
                 status=task.status,
                 error_message=task.error_message,
-                created_at=str(task.created_at),
-                completed_at=str(task.completed_at) if task.completed_at else None,
+                created_at=task.created_at.isoformat(),
+                completed_at=task.completed_at.isoformat() if task.completed_at else None,
             )
             for task in tasks
         ],
@@ -160,15 +160,15 @@ def sync_history(current_user: User = Depends(get_current_user), db: Session = D
         .limit(20)
     ).all()
     return SyncHistoryResponse(
-        last_completed_download=str(last_completed) if last_completed else None,
+        last_completed_download=last_completed.replace(tzinfo=UTC).isoformat() if last_completed else None,
         recent_downloads=[
             DownloadFailureItem(
                 title=task.title,
                 artist=task.artist,
                 status=task.status,
                 error_message=task.error_message,
-                created_at=str(task.created_at),
-                completed_at=str(task.completed_at) if task.completed_at else None,
+                created_at=task.created_at.isoformat(),
+                completed_at=task.completed_at.isoformat() if task.completed_at else None,
             )
             for task in recent_tasks
         ],

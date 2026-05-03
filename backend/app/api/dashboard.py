@@ -1,3 +1,5 @@
+from datetime import UTC
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -56,6 +58,6 @@ def dashboard_summary(current_user: User = Depends(get_current_user), db: Sessio
         "synced_playlists_total": playlist_total,
         "synced_playlists_enabled": playlist_enabled,
         "platform_links": platform_links,
-        "last_completed_download": last_completed.isoformat() if last_completed else None,
+        "last_completed_download": last_completed.replace(tzinfo=UTC).isoformat() if last_completed else None,
         "next_sync": next_sync,
     }

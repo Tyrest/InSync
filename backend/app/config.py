@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     google_client_secret: str | None = None
     oauth_redirect_base_url: str | None = None
     download_concurrency: int = 3
-    sync_hour_utc: int = 2
+    sync_hour: int = 2
     log_level: str = "INFO"
-    server_timezone: str | None = None
+    server_timezone: str = "America/New_York"
     audio_format: str = "opus"
     audio_quality: str = "128"
 

@@ -37,7 +37,7 @@ export function AdminPage(): JSX.Element {
     setSettings(cfg);
     setEffective(eff);
     setConcurrency(cfg.download_concurrency ?? "3");
-    setSyncHour(cfg.sync_hour_utc ?? "2");
+    setSyncHour(cfg.sync_hour ?? "2");
     setSpotifyClientId(cfg.spotify_client_id ?? "");
     setSpotifyClientSecret(cfg.spotify_client_secret ?? "");
     setGoogleClientId(cfg.google_client_id ?? "");
@@ -54,7 +54,7 @@ export function AdminPage(): JSX.Element {
   async function save() {
     const payload: Record<string, unknown> = {
       download_concurrency: Number(concurrency),
-      sync_hour_utc: Number(syncHour),
+      sync_hour: Number(syncHour),
       spotify_client_id: spotifyClientId || undefined,
       spotify_client_secret: spotifyClientSecret || undefined,
       google_client_id: googleClientId || undefined,
