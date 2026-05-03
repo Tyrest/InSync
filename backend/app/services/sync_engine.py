@@ -102,19 +102,28 @@ class SyncEngine:
             credentials = {}
             if link.credentials_json:
                 credentials = json.loads(link.credentials_json)
-            if link.platform == "spotify":
-                credentials = await connector.refresh_credentials(
-                    credentials=credentials,
-                    client_id=get_effective_setting(db, "spotify_client_id"),
-                    client_secret=get_effective_setting(db, "spotify_client_secret"),
+            try:
+                if link.platform == "spotify":
+                    credentials = await connector.refresh_credentials(
+                        credentials=credentials,
+                        client_id=get_effective_setting(db, "spotify_client_id"),
+                        client_secret=get_effective_setting(db, "spotify_client_secret"),
+                    )
+                if link.platform == "youtube":
+                    credentials = await connector.refresh_credentials(
+                        credentials=credentials,
+                        client_id=get_effective_setting(db, "google_client_id"),
+                        client_secret=get_effective_setting(db, "google_client_secret"),
+                    )
+                link.credentials_json = json.dumps(credentials)
+                db.commit()
+            except Exception:
+                log.exception(
+                    "Failed to refresh credentials for platform=%s user_id=%s — skipping platform",
+                    link.platform,
+                    user_id,
                 )
-            if link.platform == "youtube":
-                credentials = await connector.refresh_credentials(
-                    credentials=credentials,
-                    client_id=get_effective_setting(db, "google_client_id"),
-                    client_secret=get_effective_setting(db, "google_client_secret"),
-                )
-            link.credentials_json = json.dumps(credentials)
+                continue
             playlists = await connector.fetch_playlists(credentials)
             log.info("Platform %s: fetched %s playlist(s)", link.platform, len(playlists))
             for playlist in playlists:
@@ -436,19 +445,28 @@ class SyncEngine:
 
         connector = self.registry.get(link.platform)
         credentials = json.loads(link.credentials_json) if link.credentials_json else {}
-        if link.platform == "spotify":
-            credentials = await connector.refresh_credentials(
-                credentials=credentials,
-                client_id=get_effective_setting(db, "spotify_client_id"),
-                client_secret=get_effective_setting(db, "spotify_client_secret"),
+        try:
+            if link.platform == "spotify":
+                credentials = await connector.refresh_credentials(
+                    credentials=credentials,
+                    client_id=get_effective_setting(db, "spotify_client_id"),
+                    client_secret=get_effective_setting(db, "spotify_client_secret"),
+                )
+            if link.platform == "youtube":
+                credentials = await connector.refresh_credentials(
+                    credentials=credentials,
+                    client_id=get_effective_setting(db, "google_client_id"),
+                    client_secret=get_effective_setting(db, "google_client_secret"),
+                )
+            link.credentials_json = json.dumps(credentials)
+            db.commit()
+        except Exception:
+            log.exception(
+                "Failed to refresh credentials for platform=%s user_id=%s — aborting single-playlist sync",
+                link.platform,
+                user_id,
             )
-        if link.platform == "youtube":
-            credentials = await connector.refresh_credentials(
-                credentials=credentials,
-                client_id=get_effective_setting(db, "google_client_id"),
-                client_secret=get_effective_setting(db, "google_client_secret"),
-            )
-        link.credentials_json = json.dumps(credentials)
+            return
 
         all_playlists = await connector.fetch_playlists(credentials)
         target = next(
