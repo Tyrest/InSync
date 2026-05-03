@@ -260,7 +260,7 @@ class YouTubeConnector(PlatformConnector):
                         source_id=video_id,
                         title=snippet.get("title", "Unknown Title"),
                         artist=snippet.get("videoOwnerChannelTitle", "Unknown Artist"),
-                        album=(snippet.get("channelTitle") or "YouTube"),
+                        album="Singles",
                     )
                 )
             next_page_token = payload.get("nextPageToken")

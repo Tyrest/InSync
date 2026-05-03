@@ -21,8 +21,8 @@ export function AdminPage(): JSX.Element {
   const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [oauthRedirectBaseUrl, setOauthRedirectBaseUrl] = useState("");
   const [serverTimezone, setServerTimezone] = useState("");
-  const [audioFormat, setAudioFormat] = useState("mp3");
-  const [audioQuality, setAudioQuality] = useState("320");
+  const [audioFormat, setAudioFormat] = useState("opus");
+  const [audioQuality, setAudioQuality] = useState("128");
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
   const [webhookEvents, setWebhookEvents] = useState("sync_complete,sync_failed");
@@ -44,8 +44,8 @@ export function AdminPage(): JSX.Element {
     setGoogleClientSecret(cfg.google_client_secret ?? "");
     setOauthRedirectBaseUrl(cfg.oauth_redirect_base_url ?? "");
     setServerTimezone(cfg.server_timezone ?? "");
-    setAudioFormat(cfg.audio_format ?? "mp3");
-    setAudioQuality(cfg.audio_quality ?? "320");
+    setAudioFormat(cfg.audio_format ?? "opus");
+    setAudioQuality(cfg.audio_quality ?? "128");
     setWebhookUrl(cfg.webhook_url ?? "");
     setWebhookSecret(cfg.webhook_secret ?? "");
     setWebhookEvents(cfg.webhook_events ?? "sync_complete,sync_failed");
@@ -110,19 +110,20 @@ export function AdminPage(): JSX.Element {
           <label className="flex flex-col gap-1">
             <span>Format</span>
             <select className="rounded bg-zinc-800 p-2" value={audioFormat} onChange={(e) => setAudioFormat(e.target.value)}>
+              <option value="opus">Opus (default)</option>
               <option value="mp3">MP3</option>
               <option value="flac">FLAC (lossless)</option>
-              <option value="opus">Opus</option>
               <option value="m4a">M4A / AAC</option>
             </select>
           </label>
           <label className="flex flex-col gap-1">
             <span>Quality / bitrate</span>
             <select className="rounded bg-zinc-800 p-2" value={audioQuality} onChange={(e) => setAudioQuality(e.target.value)}>
-              <option value="320">320 kbps (best MP3)</option>
-              <option value="256">256 kbps</option>
+              <option value="128">128 kbps (default Opus)</option>
+              <option value="160">160 kbps</option>
               <option value="192">192 kbps</option>
-              <option value="128">128 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="320">320 kbps (best MP3)</option>
               <option value="0">Best (lossless formats)</option>
             </select>
           </label>

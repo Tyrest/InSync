@@ -1,6 +1,6 @@
 [project]
 name = "insync"
-version = "0.1.0"
+version = "0.1.1"
 description = "YouTube/Spotify to Jellyfin playlist sync service"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -10,6 +10,7 @@ dependencies = [
   "fastapi>=0.116.0",
   "httpx>=0.28.1",
   "mutagen>=1.47.0",
+  "pillow>=11.0.0",
   "pydantic-settings>=2.10.1",
   "pyjwt>=2.10.1",
   "python-multipart>=0.0.20",

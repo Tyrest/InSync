@@ -59,10 +59,10 @@ def test_safe_source_id_fragment() -> None:
 
 def test_unique_path_is_flat_layout(tmp_path: Path) -> None:
     ds = DownloadService(tmp_path, concurrency=1)
-    p = ds.unique_mp3_path("My Song", "My Artist", "My Album", "dQw4w9WgXcQ")
+    p = ds.unique_audio_path("My Song", "My Artist", "My Album", "dQw4w9WgXcQ")
     # Flat layout: music_dir / artist / file (no album directory)
     assert p.parent == tmp_path / "My Artist"
-    assert p.name == "My Song__dQw4w9WgXcQ.mp3"
+    assert p.name == "My Song__dQw4w9WgXcQ.opus"
 
 
 def test_legacy_path_has_album_dir(tmp_path: Path) -> None:
@@ -74,7 +74,7 @@ def test_legacy_path_has_album_dir(tmp_path: Path) -> None:
 
 def test_first_existing_prefers_unique(tmp_path: Path) -> None:
     ds = DownloadService(tmp_path, concurrency=1)
-    unique = ds.unique_mp3_path("Song", "Artist", "Album", "abcdefghijk")
+    unique = ds.unique_audio_path("Song", "Artist", "Album", "abcdefghijk")
     unique.parent.mkdir(parents=True, exist_ok=True)
     unique.write_text("audio data")
     legacy = ds.legacy_mp3_path("Song", "Artist", "Album")
@@ -87,5 +87,12 @@ def test_first_existing_prefers_unique(tmp_path: Path) -> None:
 
 def test_audio_config_affects_extension(tmp_path: Path) -> None:
     ds = DownloadService(tmp_path, concurrency=1, audio_config=AudioConfig(format="flac", quality="0"))
-    p = ds.unique_mp3_path("Song", "Artist", "Album", "abcdefghijk")
+    p = ds.unique_audio_path("Song", "Artist", "Album", "abcdefghijk")
     assert p.suffix == ".flac"
+
+
+def test_ytdlp_format_prefers_opus_when_output_is_opus() -> None:
+    ds = DownloadService(Path("/tmp"), concurrency=1)
+    opts = ds._ytdlp_options("/tmp/stem.%(ext)s", Path("/tmp/stem.opus"))
+    assert opts["format"] == "bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio/best"
+    assert opts["writethumbnail"] is True

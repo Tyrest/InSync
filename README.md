@@ -34,6 +34,31 @@ npm run dev
 
 ## Docker
 
+### Docker Compose (recommended)
+
+The easiest way to run InSync alongside Jellyfin is with the included `docker-compose.yml`:
+
+```bash
+docker compose up -d
+```
+
+This starts two services:
+
+| Service | Host port | Description |
+|---------|-----------|-------------|
+| `insync` | 8090 | InSync app |
+| `jellyfin` | 8096 | Jellyfin media server |
+
+Both containers share a `./volumes/jellyfin-music` volume, so music downloaded by InSync is immediately visible to Jellyfin as a library path.
+
+**`JELLYFIN_URL`** is pre-configured to `http://jellyfin:8096` — the Jellyfin container's internal address on the shared Docker network. You don't need to change this when using Docker Compose.
+
+After starting, open Jellyfin at `http://localhost:8096` to complete its setup wizard, then open InSync at `http://localhost:8090` to run the InSync setup wizard (Jellyfin URL + API key).
+
+---
+
+### Standalone Docker
+
 Pull the pre-built image from GHCR:
 
 ```bash
