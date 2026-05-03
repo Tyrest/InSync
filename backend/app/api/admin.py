@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,9 +11,37 @@ from app.database import get_db
 from app.models.app_config import AppConfig
 from app.models.download_task import DownloadTask
 from app.models.user import User
-from app.state import app_state
+from app.services.app_config import set_setting
+from app.state import app_state, hydrate_audio_config_from_db, hydrate_jellyfin_from_db
 
 router = APIRouter()
+
+
+class UserItem(BaseModel):
+    id: int
+    jellyfin_user_id: str
+    username: str
+    is_admin: bool
+
+
+class UsersResponse(BaseModel):
+    users: list[UserItem]
+
+
+class SystemInfoResponse(BaseModel):
+    music_dir_exists: bool
+    data_dir_exists: bool
+    download_tasks: int
+    download_concurrency: int
+
+
+class AdminSettingsResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")  # dynamic keys from AppConfig
+
+
+class SettingsUpdateResponse(BaseModel):
+    status: str
+
 
 _SECRET_KEYS = frozenset(
     {
@@ -34,34 +62,34 @@ def _mask(value: str | None) -> str | None:
     return ("*" * (len(value) - 4)) + value[-4:]
 
 
-@router.get("/users")
-def users(_: User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+@router.get("/users", response_model=UsersResponse)
+def users(_: User = Depends(require_admin), db: Session = Depends(get_db)) -> UsersResponse:
     all_users = db.scalars(select(User)).all()
-    return {
-        "users": [
-            {
-                "id": user.id,
-                "jellyfin_user_id": user.jellyfin_user_id,
-                "username": user.jellyfin_username,
-                "is_admin": user.is_admin,
-            }
+    return UsersResponse(
+        users=[
+            UserItem(
+                id=user.id,
+                jellyfin_user_id=user.jellyfin_user_id,
+                username=user.jellyfin_username,
+                is_admin=user.is_admin,
+            )
             for user in all_users
         ]
-    }
+    )
 
 
-@router.get("/system")
-def system_info(_: User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+@router.get("/system", response_model=SystemInfoResponse)
+def system_info(_: User = Depends(require_admin), db: Session = Depends(get_db)) -> SystemInfoResponse:
     settings = get_settings()
     music_dir = settings.music_dir
     data_dir = settings.data_dir
     tasks = db.scalars(select(DownloadTask)).all()
-    return {
-        "music_dir_exists": Path(music_dir).exists(),
-        "data_dir_exists": Path(data_dir).exists(),
-        "download_tasks": len(tasks),
-        "download_concurrency": settings.download_concurrency,
-    }
+    return SystemInfoResponse(
+        music_dir_exists=Path(music_dir).exists(),
+        data_dir_exists=Path(data_dir).exists(),
+        download_tasks=len(tasks),
+        download_concurrency=settings.download_concurrency,
+    )
 
 
 class AdminSettingsUpdate(BaseModel):
@@ -82,10 +110,11 @@ class AdminSettingsUpdate(BaseModel):
     webhook_events: str | None = None
 
 
-@router.get("/settings")
-def get_settings_view(_: User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+@router.get("/settings", response_model=AdminSettingsResponse)
+def get_settings_view(_: User = Depends(require_admin), db: Session = Depends(get_db)) -> AdminSettingsResponse:
     rows = db.scalars(select(AppConfig)).all()
-    return {row.key: _mask(row.value) if row.key in _SECRET_KEYS else row.value for row in rows}
+    data = {row.key: _mask(row.value) if row.key in _SECRET_KEYS else row.value for row in rows}
+    return AdminSettingsResponse(**data)
 
 
 @router.get("/settings/effective")
@@ -133,21 +162,17 @@ def get_effective_settings(_: User = Depends(require_admin), db: Session = Depen
     return {"values": effective, "sources": sources, "configured": configured}
 
 
-@router.patch("/settings")
+@router.patch("/settings", response_model=SettingsUpdateResponse)
 def update_settings(
     payload: AdminSettingsUpdate, _: User = Depends(require_admin), db: Session = Depends(get_db)
-) -> dict[str, str]:
+) -> SettingsUpdateResponse:
     changes = payload.model_dump(exclude_none=True)
     for key, value in changes.items():
-        row = db.scalar(select(AppConfig).where(AppConfig.key == key))
-        if row:
-            row.value = str(value)
-        else:
-            db.add(AppConfig(key=key, value=str(value)))
+        set_setting(db, key, str(value))
     db.commit()
 
-    app_state.hydrate_jellyfin_from_db(db)
-    app_state.hydrate_audio_config_from_db(db)
+    hydrate_jellyfin_from_db(db)
+    hydrate_audio_config_from_db(db)
     if app_state.scheduler and ("sync_hour_utc" in changes or "server_timezone" in changes):
         app_state.scheduler.reschedule()
-    return {"status": "ok"}
+    return SettingsUpdateResponse(status="ok")

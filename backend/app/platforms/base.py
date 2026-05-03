@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from sqlalchemy.orm import Session
+
 
 @dataclass(slots=True)
 class TrackInfo:
@@ -58,3 +60,6 @@ class PlatformConnector(ABC):
 
     @abstractmethod
     async def search_track(self, query: str) -> TrackInfo | None: ...
+
+    @abstractmethod
+    def get_credentials(self, db: Session) -> tuple[str | None, str | None]: ...

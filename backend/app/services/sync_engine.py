@@ -10,7 +10,6 @@ from app.models.synced_playlist import SyncedPlaylist, SyncedPlaylistTrack
 from app.models.track import Track
 from app.models.user import User
 from app.platforms.registry import PlatformRegistry
-from app.services.app_config import get_effective_setting
 from app.services.download import DownloadRequest, DownloadResult, DownloadService
 from app.services.jellyfin import JellyfinClient
 from app.services.metadata import AudioTagContext, tag_audio_file
@@ -75,6 +74,176 @@ class SyncEngine:
                 self._running_user_ids.discard(user_id)
                 db.close()
 
+    async def _sync_one_playlist(
+        self,
+        db: Session,
+        user: User,
+        synced: SyncedPlaylist,
+        link: PlatformLink,
+        credentials: dict,
+        playlist_track_paths: dict[int, list[str | None]],
+        download_queue: list[tuple[DownloadRequest, int]],
+        source_id_to_idx: dict[str, int],
+        source_id_slots: dict[str, list[tuple[int, int]]],
+    ) -> None:
+        """Process a single SyncedPlaylist: resolve tracks, import from disk, and queue downloads.
+
+        Populates playlist_track_paths, download_queue, source_id_to_idx, and source_id_slots
+        in-place. Does not commit; that remains the caller's responsibility.
+        """
+        connector = self.registry.get(link.platform)
+        # Fetch all playlists for this platform and find the one matching synced
+        all_playlists = await connector.fetch_playlists(credentials)
+        playlist = next(
+            (p for p in all_playlists if p.playlist_id == synced.platform_playlist_id),
+            None,
+        )
+        if playlist is None:
+            log.warning(
+                "_sync_one_playlist: upstream playlist %s not found for platform=%s",
+                synced.platform_playlist_id,
+                link.platform,
+            )
+            return
+
+        user_id = user.id
+        playlist_track_paths[synced.id] = [None] * len(playlist.tracks)
+        db.execute(delete(SyncedPlaylistTrack).where(SyncedPlaylistTrack.synced_playlist_id == synced.id))
+
+        for pos, track in enumerate(playlist.tracks):
+            canonical = track
+            if link.platform == "spotify":
+                query = f"{track.title} {track.artist}"
+                youtube_match = await self.registry.get("youtube").search_track(query)
+                if youtube_match:
+                    canonical = youtube_match
+                    canonical.title = track.title
+                    canonical.artist = track.artist
+                    canonical.album = track.album
+
+            existing = db.scalar(select(Track).where(Track.source_id == canonical.source_id))
+            if existing:
+                playlist_track_paths[synced.id][pos] = existing.file_path
+                db.add(
+                    SyncedPlaylistTrack(
+                        synced_playlist_id=synced.id,
+                        track_id=existing.id,
+                        position=pos,
+                    )
+                )
+                continue
+
+            disk_path = self.downloader.first_existing_audio_path(
+                track.title, track.artist, track.album, canonical.source_id
+            )
+            if disk_path is not None and disk_path.is_file():
+                path_keys = DownloadService.path_key_variants(disk_path)
+                by_path = db.scalar(select(Track).where(Track.file_path.in_(path_keys)))
+                if by_path is not None:
+                    if by_path.source_id == canonical.source_id:
+                        playlist_track_paths[synced.id][pos] = by_path.file_path
+                        db.add(
+                            SyncedPlaylistTrack(
+                                synced_playlist_id=synced.id,
+                                track_id=by_path.id,
+                                position=pos,
+                            )
+                        )
+                        log.info("Linked track on disk (DB path match): %s — %s", track.artist, track.title)
+                        continue
+                    log.warning(
+                        "File %s exists but is tied to source_id=%s (expected %s); will try normal download",
+                        disk_path,
+                        by_path.source_id,
+                        canonical.source_id,
+                    )
+                else:
+                    file_path_str = str(disk_path.resolve())
+                    track_row = Track(
+                        title=track.title,
+                        artist=track.artist,
+                        album=track.album,
+                        duration_seconds=0,
+                        file_path=file_path_str,
+                        source_platform="youtube",
+                        source_id=canonical.source_id,
+                        file_size=disk_path.stat().st_size,
+                    )
+                    try:
+                        with db.begin_nested():
+                            db.add(track_row)
+                            db.flush()
+                    except IntegrityError:
+                        log.warning(
+                            "Disk import skipped (DB conflict for path=%s, source_id=%s); queuing download",
+                            file_path_str,
+                            canonical.source_id,
+                        )
+                    else:
+                        tag_audio_file(
+                            disk_path,
+                            AudioTagContext(
+                                title=track.title,
+                                artist=track.artist,
+                                album=track.album,
+                                insync_version=get_app_version(),
+                            ),
+                        )
+                        playlist_track_paths[synced.id][pos] = track_row.file_path
+                        db.add(
+                            SyncedPlaylistTrack(
+                                synced_playlist_id=synced.id,
+                                track_id=track_row.id,
+                                position=pos,
+                            )
+                        )
+                        log.info(
+                            "Imported file from disk into DB (skipped download): %s — %s",
+                            track.artist,
+                            track.title,
+                        )
+                        continue
+
+            # Deduplicate: if this source_id is already queued, just
+            # record the extra playlist slot instead of downloading again.
+            if canonical.source_id in source_id_to_idx:
+                source_id_slots[canonical.source_id].append((synced.id, pos))
+                log.debug(
+                    "Dedup: source_id=%s already queued, adding slot playlist=%s pos=%s",
+                    canonical.source_id,
+                    synced.id,
+                    pos,
+                )
+                continue
+
+            task = DownloadTask(
+                user_id=user_id,
+                source_id=canonical.source_id,
+                search_query=f"{track.title} {track.artist}",
+                title=track.title,
+                artist=track.artist,
+                status=DownloadStatus.PENDING.value,
+            )
+            db.add(task)
+            db.flush()
+
+            idx = len(download_queue)
+            source_id_to_idx[canonical.source_id] = idx
+            source_id_slots.setdefault(canonical.source_id, []).append((synced.id, pos))
+            download_queue.append(
+                (
+                    DownloadRequest(
+                        source_id=canonical.source_id,
+                        search_query=f"{track.title} {track.artist}",
+                        title=track.title,
+                        artist=track.artist,
+                        album=track.album,
+                    ),
+                    task.id,
+                )
+            )
+        synced.last_synced = datetime.now(UTC)
+
     async def run_user_sync(self, db: Session, user_id: int) -> None:
         log.info("Sync started user_id=%s", user_id)
         links = db.scalars(select(PlatformLink).where(PlatformLink.user_id == user_id)).all()
@@ -103,18 +272,12 @@ class SyncEngine:
             if link.credentials_json:
                 credentials = json.loads(link.credentials_json)
             try:
-                if link.platform == "spotify":
-                    credentials = await connector.refresh_credentials(
-                        credentials=credentials,
-                        client_id=get_effective_setting(db, "spotify_client_id"),
-                        client_secret=get_effective_setting(db, "spotify_client_secret"),
-                    )
-                if link.platform == "youtube":
-                    credentials = await connector.refresh_credentials(
-                        credentials=credentials,
-                        client_id=get_effective_setting(db, "google_client_id"),
-                        client_secret=get_effective_setting(db, "google_client_secret"),
-                    )
+                client_id, client_secret = connector.get_credentials(db)
+                credentials = await connector.refresh_credentials(
+                    credentials=credentials,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                )
                 link.credentials_json = json.dumps(credentials)
                 db.commit()
             except Exception:
@@ -146,142 +309,25 @@ class SyncEngine:
                     db.flush()
                 if not synced.enabled:
                     continue
-                playlist_track_paths[synced.id] = [None] * len(playlist.tracks)
-                db.execute(delete(SyncedPlaylistTrack).where(SyncedPlaylistTrack.synced_playlist_id == synced.id))
-
-                for pos, track in enumerate(playlist.tracks):
-                    canonical = track
-                    if link.platform == "spotify":
-                        query = f"{track.title} {track.artist}"
-                        youtube_match = await self.registry.get("youtube").search_track(query)
-                        if youtube_match:
-                            canonical = youtube_match
-                            canonical.title = track.title
-                            canonical.artist = track.artist
-                            canonical.album = track.album
-
-                    existing = db.scalar(select(Track).where(Track.source_id == canonical.source_id))
-                    if existing:
-                        playlist_track_paths[synced.id][pos] = existing.file_path
-                        db.add(
-                            SyncedPlaylistTrack(
-                                synced_playlist_id=synced.id,
-                                track_id=existing.id,
-                                position=pos,
-                            )
-                        )
-                        continue
-
-                    disk_path = self.downloader.first_existing_audio_path(
-                        track.title, track.artist, track.album, canonical.source_id
+                try:
+                    await self._sync_one_playlist(
+                        db=db,
+                        user=user,
+                        synced=synced,
+                        link=link,
+                        credentials=credentials,
+                        playlist_track_paths=playlist_track_paths,
+                        download_queue=download_queue,
+                        source_id_to_idx=source_id_to_idx,
+                        source_id_slots=source_id_slots,
                     )
-                    if disk_path is not None and disk_path.is_file():
-                        path_keys = DownloadService.path_key_variants(disk_path)
-                        by_path = db.scalar(select(Track).where(Track.file_path.in_(path_keys)))
-                        if by_path is not None:
-                            if by_path.source_id == canonical.source_id:
-                                playlist_track_paths[synced.id][pos] = by_path.file_path
-                                db.add(
-                                    SyncedPlaylistTrack(
-                                        synced_playlist_id=synced.id,
-                                        track_id=by_path.id,
-                                        position=pos,
-                                    )
-                                )
-                                log.info("Linked track on disk (DB path match): %s — %s", track.artist, track.title)
-                                continue
-                            log.warning(
-                                "File %s exists but is tied to source_id=%s (expected %s); will try normal download",
-                                disk_path,
-                                by_path.source_id,
-                                canonical.source_id,
-                            )
-                        else:
-                            file_path_str = str(disk_path.resolve())
-                            track_row = Track(
-                                title=track.title,
-                                artist=track.artist,
-                                album=track.album,
-                                duration_seconds=0,
-                                file_path=file_path_str,
-                                source_platform="youtube",
-                                source_id=canonical.source_id,
-                                file_size=disk_path.stat().st_size,
-                            )
-                            try:
-                                with db.begin_nested():
-                                    db.add(track_row)
-                                    db.flush()
-                            except IntegrityError:
-                                log.warning(
-                                    "Disk import skipped (DB conflict for path=%s, source_id=%s); queuing download",
-                                    file_path_str,
-                                    canonical.source_id,
-                                )
-                            else:
-                                tag_audio_file(
-                                    disk_path,
-                                    AudioTagContext(
-                                        title=track.title,
-                                        artist=track.artist,
-                                        album=track.album,
-                                        insync_version=get_app_version(),
-                                    ),
-                                )
-                                playlist_track_paths[synced.id][pos] = track_row.file_path
-                                db.add(
-                                    SyncedPlaylistTrack(
-                                        synced_playlist_id=synced.id,
-                                        track_id=track_row.id,
-                                        position=pos,
-                                    )
-                                )
-                                log.info(
-                                    "Imported file from disk into DB (skipped download): %s — %s",
-                                    track.artist,
-                                    track.title,
-                                )
-                                continue
-
-                    # Deduplicate: if this source_id is already queued, just
-                    # record the extra playlist slot instead of downloading again.
-                    if canonical.source_id in source_id_to_idx:
-                        source_id_slots[canonical.source_id].append((synced.id, pos))
-                        log.debug(
-                            "Dedup: source_id=%s already queued, adding slot playlist=%s pos=%s",
-                            canonical.source_id,
-                            synced.id,
-                            pos,
-                        )
-                        continue
-
-                    task = DownloadTask(
-                        user_id=user_id,
-                        source_id=canonical.source_id,
-                        search_query=f"{track.title} {track.artist}",
-                        title=track.title,
-                        artist=track.artist,
-                        status=DownloadStatus.PENDING.value,
+                except Exception:
+                    log.exception(
+                        "Error processing playlist %s (platform=%s, user_id=%s) — continuing",
+                        synced.platform_playlist_id,
+                        link.platform,
+                        user_id,
                     )
-                    db.add(task)
-                    db.flush()
-
-                    idx = len(download_queue)
-                    source_id_to_idx[canonical.source_id] = idx
-                    source_id_slots.setdefault(canonical.source_id, []).append((synced.id, pos))
-                    download_queue.append(
-                        (
-                            DownloadRequest(
-                                source_id=canonical.source_id,
-                                search_query=f"{track.title} {track.artist}",
-                                title=track.title,
-                                artist=track.artist,
-                                album=track.album,
-                            ),
-                            task.id,
-                        )
-                    )
-                synced.last_synced = datetime.now(UTC)
 
         db.commit()
 
@@ -304,7 +350,7 @@ class SyncEngine:
                 slots = source_id_slots.get(req.source_id, [])
                 finished_count += 1
                 if result.error:
-                    self._mark_task_terminal(task_id, DownloadStatus.FAILED.value, result.error)
+                    self._mark_task_terminal(task_id, DownloadStatus.FAILED.value, result.error, db=db)
                     log.warning(
                         "Download %s/%s failed task_id=%s: %s — %s | %s",
                         finished_count,
@@ -316,7 +362,7 @@ class SyncEngine:
                     )
                     return
                 if result.path is None:
-                    self._mark_task_terminal(task_id, DownloadStatus.FAILED.value, "No output file produced")
+                    self._mark_task_terminal(task_id, DownloadStatus.FAILED.value, "No output file produced", db=db)
                     log.warning(
                         "Download %s/%s failed task_id=%s: %s — %s (no output file)",
                         finished_count,
@@ -327,12 +373,13 @@ class SyncEngine:
                     )
                     return
                 path = result.path
-                self._mark_task_terminal(task_id, DownloadStatus.COMPLETED.value, None)
-                if not self._persist_downloaded_track(slots, req, path, playlist_track_paths):
+                self._mark_task_terminal(task_id, DownloadStatus.COMPLETED.value, None, db=db)
+                if not self._persist_downloaded_track(slots, req, path, playlist_track_paths, db):
                     self._mark_task_terminal(
                         task_id,
                         DownloadStatus.FAILED.value,
                         "Could not save track (database conflict)",
+                        db=db,
                     )
                     log.warning(
                         "Download %s/%s persist failed task_id=%s: %s — %s",
@@ -356,7 +403,7 @@ class SyncEngine:
 
             await self.downloader.download_many(
                 [(req, task_id) for req, task_id in download_queue],
-                on_downloading=self._mark_task_downloading,
+                on_downloading=lambda task_id: self._mark_task_downloading(task_id, db=db),
                 on_each_result=on_each_download_result,
             )
 
@@ -421,168 +468,116 @@ class SyncEngine:
             self._running_user_ids.add(user_id)
             db: Session = self.db_factory()
             try:
-                await self._sync_single_playlist(db, user_id, synced_playlist_id)
+                user = db.scalar(select(User).where(User.id == user_id))
+                if not user:
+                    return
+                synced = db.scalar(
+                    select(SyncedPlaylist).where(
+                        SyncedPlaylist.id == synced_playlist_id, SyncedPlaylist.user_id == user_id
+                    )
+                )
+                if not synced:
+                    log.warning("Single-playlist sync: playlist %s not found for user %s", synced_playlist_id, user_id)
+                    return
+                link = db.scalar(
+                    select(PlatformLink).where(
+                        PlatformLink.user_id == user_id, PlatformLink.platform == synced.platform
+                    )
+                )
+                if not link:
+                    log.warning("Single-playlist sync: no platform link for %s", synced.platform)
+                    return
+
+                connector = self.registry.get(link.platform)
+                credentials = json.loads(link.credentials_json) if link.credentials_json else {}
+                try:
+                    client_id, client_secret = connector.get_credentials(db)
+                    credentials = await connector.refresh_credentials(
+                        credentials=credentials,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                    )
+                    link.credentials_json = json.dumps(credentials)
+                    db.commit()
+                except Exception:
+                    log.exception(
+                        "Failed to refresh credentials for platform=%s user_id=%s — aborting single-playlist sync",
+                        link.platform,
+                        user_id,
+                    )
+                    return
+
+                playlist_track_paths: dict[int, list[str | None]] = {}
+                download_queue: list[tuple[DownloadRequest, int]] = []
+                source_id_to_idx: dict[str, int] = {}
+                source_id_slots: dict[str, list[tuple[int, int]]] = {}
+
+                await self._sync_one_playlist(
+                    db=db,
+                    user=user,
+                    synced=synced,
+                    link=link,
+                    credentials=credentials,
+                    playlist_track_paths=playlist_track_paths,
+                    download_queue=download_queue,
+                    source_id_to_idx=source_id_to_idx,
+                    source_id_slots=source_id_slots,
+                )
+                db.commit()
+
+                if download_queue:
+                    any_success = False
+
+                    async def on_result(idx: int, result: DownloadResult) -> None:
+                        nonlocal any_success
+                        req, task_id = download_queue[idx]
+                        slots = source_id_slots.get(req.source_id, [])
+                        if result.error or result.path is None:
+                            self._mark_task_terminal(
+                                task_id, DownloadStatus.FAILED.value, result.error or "No file", db=db
+                            )
+                            return
+                        self._mark_task_terminal(task_id, DownloadStatus.COMPLETED.value, None, db=db)
+                        if self._persist_downloaded_track(slots, req, result.path, playlist_track_paths, db):
+                            any_success = True
+
+                    await self.downloader.download_many(
+                        [(req, tid) for req, tid in download_queue],
+                        on_downloading=lambda task_id: self._mark_task_downloading(task_id, db=db),
+                        on_each_result=on_result,
+                    )
+                    if any_success:
+                        await self.jellyfin_client.refresh_library()
+
+                raw_paths = playlist_track_paths.get(synced.id, [])
+                ordered = [p for p in raw_paths if p is not None]
+                item_ids = await self.jellyfin_client.resolve_item_ids_by_paths(user.jellyfin_user_id, ordered)
+                log.info(
+                    "Single-playlist '%s' (id=%s): %s ordered paths -> %s resolved Jellyfin item IDs",
+                    synced.platform_playlist_name,
+                    synced.id,
+                    len(ordered),
+                    len(item_ids),
+                )
+                if ordered and not item_ids:
+                    log.warning(
+                        "Single-playlist '%s': all paths unresolved — check that container mount paths match "
+                        "between InSync and Jellyfin",
+                        synced.platform_playlist_name,
+                    )
+                jf_id = await self.jellyfin_client.create_or_update_playlist(
+                    user_id=user.jellyfin_user_id,
+                    playlist_name=synced.platform_playlist_name,
+                    item_ids=item_ids,
+                    playlist_id=synced.jellyfin_playlist_id,
+                )
+                if jf_id:
+                    synced.jellyfin_playlist_id = jf_id
+                db.commit()
+                log.info("Single-playlist sync finished: playlist_id=%s user_id=%s", synced_playlist_id, user_id)
             finally:
                 self._running_user_ids.discard(user_id)
                 db.close()
-
-    async def _sync_single_playlist(self, db: Session, user_id: int, synced_playlist_id: int) -> None:
-        user = db.scalar(select(User).where(User.id == user_id))
-        if not user:
-            return
-        synced = db.scalar(
-            select(SyncedPlaylist).where(SyncedPlaylist.id == synced_playlist_id, SyncedPlaylist.user_id == user_id)
-        )
-        if not synced:
-            log.warning("Single-playlist sync: playlist %s not found for user %s", synced_playlist_id, user_id)
-            return
-        link = db.scalar(
-            select(PlatformLink).where(PlatformLink.user_id == user_id, PlatformLink.platform == synced.platform)
-        )
-        if not link:
-            log.warning("Single-playlist sync: no platform link for %s", synced.platform)
-            return
-
-        connector = self.registry.get(link.platform)
-        credentials = json.loads(link.credentials_json) if link.credentials_json else {}
-        try:
-            if link.platform == "spotify":
-                credentials = await connector.refresh_credentials(
-                    credentials=credentials,
-                    client_id=get_effective_setting(db, "spotify_client_id"),
-                    client_secret=get_effective_setting(db, "spotify_client_secret"),
-                )
-            if link.platform == "youtube":
-                credentials = await connector.refresh_credentials(
-                    credentials=credentials,
-                    client_id=get_effective_setting(db, "google_client_id"),
-                    client_secret=get_effective_setting(db, "google_client_secret"),
-                )
-            link.credentials_json = json.dumps(credentials)
-            db.commit()
-        except Exception:
-            log.exception(
-                "Failed to refresh credentials for platform=%s user_id=%s — aborting single-playlist sync",
-                link.platform,
-                user_id,
-            )
-            return
-
-        all_playlists = await connector.fetch_playlists(credentials)
-        target = next(
-            (p for p in all_playlists if p.playlist_id == synced.platform_playlist_id),
-            None,
-        )
-        if not target:
-            log.warning("Single-playlist sync: upstream playlist %s not found", synced.platform_playlist_id)
-            return
-
-        playlist_track_paths: dict[int, list[str | None]] = {synced.id: [None] * len(target.tracks)}
-        db.execute(delete(SyncedPlaylistTrack).where(SyncedPlaylistTrack.synced_playlist_id == synced.id))
-
-        download_queue: list[tuple[DownloadRequest, int]] = []
-        source_id_to_idx: dict[str, int] = {}
-        source_id_slots: dict[str, list[tuple[int, int]]] = {}
-
-        for pos, track in enumerate(target.tracks):
-            canonical = track
-            if link.platform == "spotify":
-                query = f"{track.title} {track.artist}"
-                youtube_match = await self.registry.get("youtube").search_track(query)
-                if youtube_match:
-                    canonical = youtube_match
-                    canonical.title = track.title
-                    canonical.artist = track.artist
-                    canonical.album = track.album
-
-            existing = db.scalar(select(Track).where(Track.source_id == canonical.source_id))
-            if existing:
-                playlist_track_paths[synced.id][pos] = existing.file_path
-                db.add(SyncedPlaylistTrack(synced_playlist_id=synced.id, track_id=existing.id, position=pos))
-                continue
-
-            if canonical.source_id in source_id_to_idx:
-                source_id_slots[canonical.source_id].append((synced.id, pos))
-                continue
-
-            task = DownloadTask(
-                user_id=user_id,
-                source_id=canonical.source_id,
-                search_query=f"{track.title} {track.artist}",
-                title=track.title,
-                artist=track.artist,
-                status=DownloadStatus.PENDING.value,
-            )
-            db.add(task)
-            db.flush()
-
-            idx = len(download_queue)
-            source_id_to_idx[canonical.source_id] = idx
-            source_id_slots.setdefault(canonical.source_id, []).append((synced.id, pos))
-            download_queue.append(
-                (
-                    DownloadRequest(
-                        source_id=canonical.source_id,
-                        search_query=f"{track.title} {track.artist}",
-                        title=track.title,
-                        artist=track.artist,
-                        album=track.album,
-                    ),
-                    task.id,
-                )
-            )
-
-        synced.last_synced = datetime.now(UTC)
-        db.commit()
-
-        if download_queue:
-            any_success = False
-
-            async def on_result(idx: int, result: DownloadResult) -> None:
-                nonlocal any_success
-                req, task_id = download_queue[idx]
-                slots = source_id_slots.get(req.source_id, [])
-                if result.error or result.path is None:
-                    self._mark_task_terminal(task_id, DownloadStatus.FAILED.value, result.error or "No file")
-                    return
-                self._mark_task_terminal(task_id, DownloadStatus.COMPLETED.value, None)
-                if self._persist_downloaded_track(slots, req, result.path, playlist_track_paths):
-                    any_success = True
-
-            await self.downloader.download_many(
-                [(req, tid) for req, tid in download_queue],
-                on_downloading=self._mark_task_downloading,
-                on_each_result=on_result,
-            )
-            if any_success:
-                await self.jellyfin_client.refresh_library()
-
-        raw_paths = playlist_track_paths.get(synced.id, [])
-        ordered = [p for p in raw_paths if p is not None]
-        item_ids = await self.jellyfin_client.resolve_item_ids_by_paths(user.jellyfin_user_id, ordered)
-        log.info(
-            "Single-playlist '%s' (id=%s): %s ordered paths -> %s resolved Jellyfin item IDs",
-            synced.platform_playlist_name,
-            synced.id,
-            len(ordered),
-            len(item_ids),
-        )
-        if ordered and not item_ids:
-            log.warning(
-                "Single-playlist '%s': all paths unresolved — check that container mount paths match "
-                "between InSync and Jellyfin",
-                synced.platform_playlist_name,
-            )
-        jf_id = await self.jellyfin_client.create_or_update_playlist(
-            user_id=user.jellyfin_user_id,
-            playlist_name=synced.platform_playlist_name,
-            item_ids=item_ids,
-            playlist_id=synced.jellyfin_playlist_id,
-        )
-        if jf_id:
-            synced.jellyfin_playlist_id = jf_id
-        db.commit()
-        log.info("Single-playlist sync finished: playlist_id=%s user_id=%s", synced_playlist_id, user_id)
 
     def _persist_downloaded_track(
         self,
@@ -590,18 +585,17 @@ class SyncEngine:
         req: DownloadRequest,
         path: Path,
         playlist_track_paths: dict[int, list[str | None]],
+        db: Session,
     ) -> bool:
         """Insert the Track row and link it to every playlist slot.
 
         If the Track already exists (IntegrityError on source_id or file_path),
         look it up and create the playlist links anyway.
         """
-        s: Session = self.db_factory()
+        track_id: int | None = None
+        file_path_str = str(path)
         try:
-            track_id: int | None = None
-            file_path_str = str(path)
-
-            try:
+            with db.begin_nested():  # savepoint — only the Track insert is rolled back on conflict
                 track = Track(
                     title=req.title,
                     artist=req.artist,
@@ -612,70 +606,70 @@ class SyncEngine:
                     source_id=req.source_id,
                     file_size=path.stat().st_size if path.exists() else 0,
                 )
-                s.add(track)
-                s.flush()
+                db.add(track)
+                db.flush()
                 track_id = track.id
-            except IntegrityError:
-                s.rollback()
-                existing = s.scalar(select(Track).where(Track.source_id == req.source_id))
-                if existing:
-                    track_id = existing.id
-                    file_path_str = existing.file_path
-                    log.info(
-                        "Track already exists for source_id=%s, reusing track_id=%s",
-                        req.source_id,
-                        track_id,
-                    )
-                else:
-                    log.warning(
-                        "Track insert conflict for %s — %s (source_id=%s) and no existing row found",
-                        req.artist,
-                        req.title,
-                        req.source_id,
-                    )
-                    return False
-
-            for playlist_id, pos in slots:
-                playlist_track_paths[playlist_id][pos] = file_path_str
-                s.add(
-                    SyncedPlaylistTrack(
-                        synced_playlist_id=playlist_id,
-                        track_id=track_id,
-                        position=pos,
-                    )
+        except IntegrityError:
+            existing = db.scalar(select(Track).where(Track.source_id == req.source_id))
+            if existing:
+                track_id = existing.id
+                file_path_str = existing.file_path
+                log.info(
+                    "Track already exists for source_id=%s, reusing track_id=%s",
+                    req.source_id,
+                    track_id,
                 )
-            s.commit()
-            return True
-        except Exception:
-            s.rollback()
-            log.exception(
-                "Unexpected error persisting track %s — %s (source_id=%s)",
-                req.artist,
-                req.title,
-                req.source_id,
+            else:
+                log.warning(
+                    "Track insert conflict for %s — %s (source_id=%s) and no existing row found",
+                    req.artist,
+                    req.title,
+                    req.source_id,
+                )
+                return False
+        for playlist_id, pos in slots:
+            playlist_track_paths[playlist_id][pos] = file_path_str
+            db.add(
+                SyncedPlaylistTrack(
+                    synced_playlist_id=playlist_id,
+                    track_id=track_id,
+                    position=pos,
+                )
             )
-            return False
-        finally:
-            s.close()
+        return True
 
-    def _mark_task_downloading(self, task_id: int) -> None:
-        s: Session = self.db_factory()
-        try:
+    async def _mark_task_downloading(self, task_id: int, db: Session | None = None) -> None:
+        def _write(s: Session) -> None:
             task = s.get(DownloadTask, task_id)
             if task:
                 task.status = DownloadStatus.DOWNLOADING.value
                 s.commit()
-        finally:
-            s.close()
 
-    def _mark_task_terminal(self, task_id: int, status: str, error_message: str | None) -> None:
-        s: Session = self.db_factory()
-        try:
+        if db is not None:
+            await asyncio.to_thread(_write, db)
+        else:
+            s: Session = self.db_factory()
+            try:
+                await asyncio.to_thread(_write, s)
+            finally:
+                s.close()
+
+    def _mark_task_terminal(
+        self, task_id: int, status: str, error_message: str | None, db: Session | None = None
+    ) -> None:
+        def _write(s: Session) -> None:
             task = s.get(DownloadTask, task_id)
             if task:
                 task.status = status
                 task.error_message = error_message
                 task.completed_at = datetime.now(UTC)
                 s.commit()
-        finally:
-            s.close()
+
+        if db is not None:
+            _write(db)
+        else:
+            s: Session = self.db_factory()
+            try:
+                _write(s)
+            finally:
+                s.close()

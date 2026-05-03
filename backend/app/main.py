@@ -11,7 +11,13 @@ from app.config import get_settings
 from app.core.scheduler import SchedulerService
 from app.database import Base, SessionLocal, engine
 from app.logging_config import configure_logging
-from app.state import app_state
+from app.state import (
+    app_state,
+    bootstrap_jwt_secret,
+    hydrate_audio_config_from_db,
+    hydrate_jellyfin_from_db,
+    seed_jellyfin_from_env_if_db_incomplete,
+)
 from app.version import get_app_version
 
 settings = get_settings()
@@ -32,10 +38,10 @@ async def lifespan(_: FastAPI):
     settings.music_dir.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
-        app_state.bootstrap_jwt_secret(db)
-        app_state.seed_jellyfin_from_env_if_db_incomplete(db)
-        app_state.hydrate_jellyfin_from_db(db)
-        app_state.hydrate_audio_config_from_db(db)
+        bootstrap_jwt_secret(db)
+        seed_jellyfin_from_env_if_db_incomplete(db)
+        hydrate_jellyfin_from_db(db)
+        hydrate_audio_config_from_db(db)
     scheduler = SchedulerService(app_state.sync_engine, db_factory=SessionLocal)
     scheduler.start()
     app_state.scheduler = scheduler

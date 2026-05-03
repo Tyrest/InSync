@@ -5,6 +5,8 @@ from urllib.parse import urlencode
 
 import httpx
 from app.platforms.base import PlatformConnector, PlaylistInfo, TrackInfo
+from app.services.app_config import get_effective_setting
+from sqlalchemy.orm import Session
 from ytmusicapi import YTMusic
 
 
@@ -131,6 +133,12 @@ class YouTubeConnector(PlatformConnector):
         credentials["access_token"] = data["access_token"]
         credentials["expires_at"] = int(datetime.now(UTC).timestamp()) + int(data.get("expires_in", 3600))
         return credentials
+
+    def get_credentials(self, db: Session) -> tuple[str | None, str | None]:
+        return (
+            get_effective_setting(db, "google_client_id"),
+            get_effective_setting(db, "google_client_secret"),
+        )
 
     async def fetch_playlists(self, credentials: dict) -> list[PlaylistInfo]:
         if "mock_playlists" in credentials:

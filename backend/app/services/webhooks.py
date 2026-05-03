@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -47,8 +48,6 @@ async def fire_sync_webhook(
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if secret:
-        import json
-
         body = json.dumps(payload, separators=(",", ":")).encode()
         sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         headers["X-Webhook-Signature"] = sig
