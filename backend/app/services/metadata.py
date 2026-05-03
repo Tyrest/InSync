@@ -33,8 +33,9 @@ def crop_thumbnail_to_square(path: Path) -> None:
             left = (w - side) // 2
             top = (h - side) // 2
             cropped = img.crop((left, top, left + side, top + side))
-            # Preserve original format; fall back to JPEG for unknown types.
-            fmt = img.format or "JPEG"
+            # Prefer the format Pillow detected; fall back to extension; then JPEG.
+            ext_map = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
+            fmt = img.format or ext_map.get(path.suffix.lower(), "JPEG")
             cropped.save(path, format=fmt)
             log.debug("Cropped thumbnail %s from %dx%d to %dx%d", path.name, w, h, side, side)
     except Exception as exc:  # noqa: BLE001
