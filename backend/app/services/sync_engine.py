@@ -13,8 +13,9 @@ from app.platforms.registry import PlatformRegistry
 from app.services.app_config import get_effective_setting
 from app.services.download import DownloadRequest, DownloadResult, DownloadService
 from app.services.jellyfin import JellyfinClient
-from app.services.metadata import tag_audio_file
+from app.services.metadata import AudioTagContext, tag_audio_file
 from app.services.webhooks import fire_sync_webhook
+from app.version import get_app_version
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -209,7 +210,15 @@ class SyncEngine:
                                     canonical.source_id,
                                 )
                             else:
-                                tag_audio_file(disk_path, track.title, track.artist, track.album)
+                                tag_audio_file(
+                                    disk_path,
+                                    AudioTagContext(
+                                        title=track.title,
+                                        artist=track.artist,
+                                        album=track.album,
+                                        insync_version=get_app_version(),
+                                    ),
+                                )
                                 playlist_track_paths[synced.id][pos] = track_row.file_path
                                 db.add(
                                     SyncedPlaylistTrack(

@@ -12,6 +12,7 @@ from app.core.scheduler import SchedulerService
 from app.database import Base, SessionLocal, engine
 from app.logging_config import configure_logging
 from app.state import app_state
+from app.version import get_app_version
 
 settings = get_settings()
 _log = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="InSync",
-    version="0.1.0",
+    version=get_app_version(),
     lifespan=lifespan,
 )
 app.include_router(api_router)
@@ -81,7 +82,7 @@ def _render_spa_html(index_html: str) -> str:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "version": get_app_version()}
 
 
 @app.get("/{full_path:path}", response_model=None)

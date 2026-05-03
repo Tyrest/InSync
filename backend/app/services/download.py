@@ -4,10 +4,11 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import yt_dlp
-from app.services.metadata import tag_audio_file
+from app.services.metadata import AudioTagContext, crop_thumbnail_to_square, tag_audio_file, ytdlp_info_to_extra
+from app.version import get_app_version
 from yt_dlp.utils import DownloadError
 
 log = logging.getLogger(__name__)
@@ -15,8 +16,8 @@ log = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class AudioConfig:
-    format: str = "mp3"
-    quality: str = "320"
+    format: str = "opus"
+    quality: str = "128"
 
 
 @dataclass(slots=True)
@@ -68,6 +69,18 @@ def _yt_dlp_input_for_request(request: DownloadRequest) -> str:
     return _yt_dlp_search_or_url_argument(request.search_query)
 
 
+def _output_extension(audio_format: str) -> str:
+    if audio_format == "best":
+        return "opus"
+    return audio_format
+
+
+def _ytdlp_format_selector_for_extension(ext: str) -> str:
+    if ext == "opus":
+        return "bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio/best"
+    return "bestaudio/best"
+
+
 class DownloadService:
     def __init__(self, music_dir: Path, concurrency: int, audio_config: AudioConfig | None = None) -> None:
         self.music_dir = music_dir
@@ -77,13 +90,13 @@ class DownloadService:
 
     # --- path helpers (flat layout: music_dir / artist / file) ---
 
-    def _mp3_path(self, filename_stem: str, artist: str) -> Path:
-        ext = self.audio_config.format if self.audio_config.format != "best" else "mp3"
+    def _audio_output_path(self, filename_stem: str, artist: str) -> Path:
+        ext = _output_extension(self.audio_config.format)
         return self.music_dir / _safe_name(artist) / f"{filename_stem}.{ext}"
 
-    def unique_mp3_path(self, title: str, artist: str, _album: str, source_id: str) -> Path:
+    def unique_audio_path(self, title: str, artist: str, _album: str, source_id: str) -> Path:
         frag = _safe_source_id_fragment(source_id)
-        return self._mp3_path(f"{_safe_name(title)}__{frag}", artist)
+        return self._audio_output_path(f"{_safe_name(title)}__{frag}", artist)
 
     def legacy_mp3_path(self, title: str, artist: str, album: str) -> Path:
         """Historical 3-level layout: ``music_dir / artist / album / title.mp3``."""
@@ -99,7 +112,7 @@ class DownloadService:
     def first_existing_audio_path(self, title: str, artist: str, album: str, source_id: str) -> Path | None:
         """Return an on-disk file for this track, checking new flat layout first, then legacy 3-level."""
         candidates = [
-            self.unique_mp3_path(title, artist, album, source_id),
+            self.unique_audio_path(title, artist, album, source_id),
             self.flat_legacy_mp3_path(title, artist),
             self.legacy_mp3_path(title, artist, album),
         ]
@@ -111,6 +124,37 @@ class DownloadService:
     @staticmethod
     def path_key_variants(path: Path) -> list[str]:
         return list({str(path), str(path.resolve())})
+
+    @staticmethod
+    def _find_sidecar_thumbnail(artist_dir: Path, stem: str) -> Path | None:
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            p = artist_dir / f"{stem}{ext}"
+            if p.is_file():
+                return p
+        for p in sorted(artist_dir.glob(f"{stem}.*")):
+            if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp") and p.is_file():
+                return p
+        return None
+
+    def _ytdlp_options(self, output_template: str, out_path: Path) -> dict[str, Any]:
+        ac = self.audio_config
+        ext = out_path.suffix.lstrip(".").lower()
+        return {
+            "quiet": True,
+            "noprogress": True,
+            "format": _ytdlp_format_selector_for_extension(ext),
+            "outtmpl": output_template,
+            "default_search": "ytsearch1",
+            "js_runtimes": {"deno": {}},
+            "writethumbnail": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": ext,
+                    "preferredquality": ac.quality,
+                }
+            ],
+        }
 
     # --- download orchestration ---
 
@@ -199,34 +243,56 @@ class DownloadService:
             )
         return raw
 
+    def _tag_from_request_only(self, path: Path, request: DownloadRequest) -> None:
+        ctx = AudioTagContext(
+            title=request.title,
+            artist=request.artist,
+            album=request.album,
+            insync_version=get_app_version(),
+        )
+        tag_audio_file(path, ctx)
+
+    def _tag_after_download(
+        self,
+        path: Path,
+        request: DownloadRequest,
+        artist_dir: Path,
+        info: dict[str, Any] | None,
+    ) -> None:
+        stem = path.stem
+        thumb = self._find_sidecar_thumbnail(artist_dir, stem)
+        if thumb is not None:
+            crop_thumbnail_to_square(thumb)
+        extra = ytdlp_info_to_extra(info) if info else {}
+        ctx = AudioTagContext(
+            title=request.title,
+            artist=request.artist,
+            album=request.album,
+            insync_version=get_app_version(),
+            ytdlp_extra=extra or None,
+            thumbnail_path=thumb,
+        )
+        tag_audio_file(path, ctx)
+        if thumb is not None and thumb.is_file():
+            try:
+                thumb.unlink()
+            except OSError as exc:
+                log.debug("Could not remove thumbnail sidecar %s: %s", thumb, exc)
+
     def _run_download(self, request: DownloadRequest) -> Path:
-        path = self.unique_mp3_path(request.title, request.artist, request.album, request.source_id)
+        path = self.unique_audio_path(request.title, request.artist, request.album, request.source_id)
         artist_dir = path.parent
         artist_dir.mkdir(parents=True, exist_ok=True)
         if path.is_file():
-            tag_audio_file(path, request.title, request.artist, request.album)
+            self._tag_from_request_only(path, request)
             return path
         output_template = str(artist_dir / f"{path.stem}.%(ext)s")
-        ac = self.audio_config
-        options: dict = {
-            "quiet": True,
-            "noprogress": True,
-            "format": "bestaudio/best",
-            "outtmpl": output_template,
-            "default_search": "ytsearch1",
-            "js_runtimes": {"deno": {}},
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": ac.format if ac.format != "best" else "mp3",
-                    "preferredquality": ac.quality,
-                }
-            ],
-        }
+        options = self._ytdlp_options(output_template, path)
         inp = _yt_dlp_input_for_request(request)
+        info: dict[str, Any] | None = None
         with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([inp])
+            info = ydl.extract_info(inp, download=True)
         if not path.is_file():
             raise RuntimeError(f"Download produced no file for: {inp}")
-        tag_audio_file(path, request.title, request.artist, request.album)
+        self._tag_after_download(path, request, artist_dir, info)
         return path

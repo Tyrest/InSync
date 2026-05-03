@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     sync_hour_utc: int = 2
     log_level: str = "INFO"
     server_timezone: str | None = None
-    audio_format: str = "mp3"
-    audio_quality: str = "320"
+    audio_format: str = "opus"
+    audio_quality: str = "128"
 
     @computed_field
     @property
