@@ -4,6 +4,8 @@ from urllib.parse import urlencode
 import httpx
 import spotipy
 from app.platforms.base import PlatformConnector, PlaylistInfo, TrackInfo
+from app.services.app_config import get_effective_setting
+from sqlalchemy.orm import Session
 
 
 class SpotifyConnector(PlatformConnector):
@@ -160,3 +162,9 @@ class SpotifyConnector(PlatformConnector):
 
     async def search_track(self, query: str) -> TrackInfo | None:
         return None
+
+    def get_credentials(self, db: Session) -> tuple[str | None, str | None]:
+        return (
+            get_effective_setting(db, "spotify_client_id"),
+            get_effective_setting(db, "spotify_client_secret"),
+        )

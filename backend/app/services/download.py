@@ -98,23 +98,14 @@ class DownloadService:
         frag = _safe_source_id_fragment(source_id)
         return self._audio_output_path(f"{_safe_name(title)}__{frag}", artist)
 
-    def legacy_mp3_path(self, title: str, artist: str, album: str) -> Path:
-        """Historical 3-level layout: ``music_dir / artist / album / title.mp3``."""
-        return self.music_dir / _safe_name(artist) / _safe_name(album) / f"{_safe_name(title)}.mp3"
-
-    def flat_legacy_mp3_path(self, title: str, artist: str) -> Path:
-        """Flat 2-level layout without source_id (transitional)."""
-        return self.music_dir / _safe_name(artist) / f"{_safe_name(title)}.mp3"
-
-    def expected_mp3_path(self, title: str, artist: str, album: str) -> Path:
-        return self.legacy_mp3_path(title, artist, album)
-
     def first_existing_audio_path(self, title: str, artist: str, album: str, source_id: str) -> Path | None:
-        """Return an on-disk file for this track, checking new flat layout first, then legacy 3-level."""
+        """Return an on-disk file for this track, checking new flat layout first, then legacy paths."""
         candidates = [
             self.unique_audio_path(title, artist, album, source_id),
-            self.flat_legacy_mp3_path(title, artist),
-            self.legacy_mp3_path(title, artist, album),
+            # flat legacy: music_dir / artist / title.mp3
+            self.music_dir / _safe_name(artist) / f"{_safe_name(title)}.mp3",
+            # 3-level legacy: music_dir / artist / album / title.mp3
+            self.music_dir / _safe_name(artist) / _safe_name(album) / f"{_safe_name(title)}.mp3",
         ]
         for path in candidates:
             if path.is_file():
@@ -161,7 +152,7 @@ class DownloadService:
     async def download_many(
         self,
         items: list[tuple[DownloadRequest, int]],
-        on_downloading: Callable[[int], None] | None = None,
+        on_downloading: Callable[[int], Awaitable[None]] | None = None,
         on_each_result: Callable[[int, DownloadResult], Awaitable[None]] | None = None,
     ) -> list[DownloadResult]:
         async def run_indexed(index: int, req: DownloadRequest, task_id: int) -> tuple[int, DownloadResult]:
@@ -187,11 +178,11 @@ class DownloadService:
         self,
         request: DownloadRequest,
         task_id: int,
-        on_downloading: Callable[[int], None] | None,
+        on_downloading: Callable[[int], Awaitable[None]] | None,
     ) -> DownloadResult:
         async with self._semaphore:
             if on_downloading is not None:
-                await asyncio.to_thread(on_downloading, task_id)
+                await on_downloading(task_id)
             log.info("yt-dlp starting task_id=%s: %s — %s", task_id, request.artist, request.title)
             try:
                 path = await asyncio.to_thread(self._run_download, request)

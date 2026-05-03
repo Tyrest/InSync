@@ -3,6 +3,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,19 +19,37 @@ from app.state import app_state
 router = APIRouter()
 
 
-@router.get("")
-def list_platforms(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+class LinkedPlatform(BaseModel):
+    platform: str
+    linked_at: str
+
+
+class PlatformsResponse(BaseModel):
+    available: list[str]
+    linked: list[LinkedPlatform]
+
+
+class OAuthStartResponse(BaseModel):
+    authorize_url: str
+
+
+class UnlinkResponse(BaseModel):
+    status: str
+
+
+@router.get("", response_model=PlatformsResponse)
+def list_platforms(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> PlatformsResponse:
     linked = db.scalars(select(PlatformLink).where(PlatformLink.user_id == current_user.id)).all()
-    return {
-        "available": app_state.registry.all(),
-        "linked": [
-            {
-                "platform": link.platform,
-                "linked_at": str(link.linked_at),
-            }
+    return PlatformsResponse(
+        available=app_state.registry.all(),
+        linked=[
+            LinkedPlatform(
+                platform=link.platform,
+                linked_at=str(link.linked_at),
+            )
             for link in linked
         ],
-    }
+    )
 
 
 def _callback_redirect_base(db: Session, request: Request) -> str:
@@ -41,33 +60,19 @@ def _callback_redirect_base(db: Session, request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _platform_config(db: Session, platform: str) -> tuple[str | None, str | None]:
-    if platform == "spotify":
-        return (
-            get_effective_setting(db, "spotify_client_id"),
-            get_effective_setting(db, "spotify_client_secret"),
-        )
-    if platform == "youtube":
-        return (
-            get_effective_setting(db, "google_client_id"),
-            get_effective_setting(db, "google_client_secret"),
-        )
-    return (None, None)
-
-
-@router.get("/{platform}/oauth/start")
+@router.get("/{platform}/oauth/start", response_model=OAuthStartResponse)
 async def start_oauth(
     platform: str,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> dict[str, str]:
+) -> OAuthStartResponse:
     try:
         connector = app_state.registry.get(platform)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    client_id, _ = _platform_config(db, platform)
+    client_id, _ = connector.get_credentials(db)
     if not client_id:
         raise HTTPException(status_code=400, detail=f"{platform} OAuth is not configured by admin")
 
@@ -85,7 +90,7 @@ async def start_oauth(
         state=oauth_state.state,
         client_id=client_id,
     )
-    return {"authorize_url": auth["authorize_url"]}
+    return OAuthStartResponse(authorize_url=auth["authorize_url"])
 
 
 @router.get("/{platform}/oauth/callback")
@@ -144,7 +149,7 @@ async def complete_oauth_callback(
         )
         return RedirectResponse(f"{frontend_path}?{params}", status_code=302)
 
-    client_id, client_secret = _platform_config(db, platform)
+    client_id, client_secret = connector.get_credentials(db)
     if not client_id or not client_secret:
         params = urlencode(
             {
@@ -202,10 +207,10 @@ async def complete_oauth_callback(
     return RedirectResponse(f"{frontend_path}?{params}", status_code=302)
 
 
-@router.delete("/{platform}/link")
+@router.delete("/{platform}/link", response_model=UnlinkResponse)
 def unlink_platform(
     platform: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
-) -> dict[str, str]:
+) -> UnlinkResponse:
     link = db.scalar(
         select(PlatformLink).where(
             PlatformLink.user_id == current_user.id,
@@ -216,4 +221,4 @@ def unlink_platform(
         raise HTTPException(status_code=404, detail="Not linked")
     db.delete(link)
     db.commit()
-    return {"status": "unlinked"}
+    return UnlinkResponse(status="unlinked")
