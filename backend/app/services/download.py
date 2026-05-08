@@ -4,12 +4,18 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
+import mutagen
 import yt_dlp
+from app.services.audio_trimmer import TrimSegment
 from app.services.metadata import AudioTagContext, crop_thumbnail_to_square, tag_audio_file, ytdlp_info_to_extra
 from app.version import get_app_version
 from yt_dlp.utils import DownloadError
+
+if TYPE_CHECKING:
+    from app.services.audio_trimmer import AudioTrimmer
+    from app.services.sponsorblock import SponsorBlockClient
 
 log = logging.getLogger(__name__)
 
@@ -82,11 +88,20 @@ def _ytdlp_format_selector_for_extension(ext: str) -> str:
 
 
 class DownloadService:
-    def __init__(self, music_dir: Path, concurrency: int, audio_config: AudioConfig | None = None) -> None:
+    def __init__(
+        self,
+        music_dir: Path,
+        concurrency: int,
+        audio_config: AudioConfig | None = None,
+        sponsorblock_client: "SponsorBlockClient | None" = None,
+        audio_trimmer: "AudioTrimmer | None" = None,
+    ) -> None:
         self.music_dir = music_dir
         self._concurrency = concurrency
         self._semaphore = asyncio.Semaphore(concurrency)
         self.audio_config = audio_config or AudioConfig()
+        self._sponsorblock_client = sponsorblock_client
+        self._audio_trimmer = audio_trimmer
 
     # --- path helpers (flat layout: music_dir / artist / file) ---
 
@@ -180,27 +195,59 @@ class DownloadService:
         task_id: int,
         on_downloading: Callable[[int], Awaitable[None]] | None,
     ) -> DownloadResult:
-        async with self._semaphore:
-            if on_downloading is not None:
-                await on_downloading(task_id)
-            log.info("yt-dlp starting task_id=%s: %s — %s", task_id, request.artist, request.title)
-            try:
-                path = await asyncio.to_thread(self._run_download, request)
+        try:
+            async with self._semaphore:
+                if on_downloading is not None:
+                    await on_downloading(task_id)
+                log.info("yt-dlp starting task_id=%s: %s — %s", task_id, request.artist, request.title)
+                path, is_fresh = await asyncio.to_thread(self._run_download, request)
                 log.info("yt-dlp finished task_id=%s: %s — %s", task_id, request.artist, request.title)
-                return DownloadResult(request=request, path=path, error=None)
-            except DownloadError as exc:
-                err = self._friendly_ytdlp_error(exc)
-                log.warning("yt-dlp failed task_id=%s: %s — %s | %s", task_id, request.artist, request.title, err[:300])
-                return DownloadResult(request=request, path=None, error=err)
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "yt-dlp failed task_id=%s: %s — %s | %s",
-                    task_id,
-                    request.artist,
-                    request.title,
-                    str(exc)[:300],
+            # Semaphore released — SponsorBlock runs in parallel with other downloads
+            if (
+                path is not None
+                and is_fresh
+                and self._sponsorblock_client is not None
+                and self._audio_trimmer is not None
+            ):
+                await self._apply_sponsorblock(path, request.source_id)
+            return DownloadResult(request=request, path=path, error=None)
+        except DownloadError as exc:
+            err = self._friendly_ytdlp_error(exc)
+            log.warning("yt-dlp failed task_id=%s: %s — %s | %s", task_id, request.artist, request.title, err[:300])
+            return DownloadResult(request=request, path=None, error=err)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "yt-dlp failed task_id=%s: %s — %s | %s",
+                task_id,
+                request.artist,
+                request.title,
+                str(exc)[:300],
+            )
+            return DownloadResult(request=request, path=None, error=str(exc))
+
+    async def _apply_sponsorblock(self, path: Path, source_id: str) -> None:
+        try:
+            assert self._sponsorblock_client is not None
+            assert self._audio_trimmer is not None
+            segments = await self._sponsorblock_client.get_segments(source_id)
+            if not segments:
+                log.debug("SponsorBlock: video_id=%s no segments found", source_id)
+                return
+            audio = mutagen.File(path)
+            duration: float = audio.info.length  # type: ignore[union-attr]
+            trim_segments = [TrimSegment(start=seg.start, end=seg.end) for seg in segments]
+            success = await asyncio.to_thread(self._audio_trimmer.trim, path, trim_segments, duration)
+            if success:
+                total_removed = sum(seg.end - seg.start for seg in segments)
+                log.info(
+                    "SponsorBlock: video_id=%s removed %d segment(s), total duration removed=%.3fs",
+                    source_id,
+                    len(segments),
+                    total_removed,
                 )
-                return DownloadResult(request=request, path=None, error=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("SponsorBlock: video_id=%s error during processing: %s", source_id, exc)
+            return
 
     @staticmethod
     def _friendly_ytdlp_error(exc: DownloadError) -> str:
@@ -270,13 +317,13 @@ class DownloadService:
             except OSError as exc:
                 log.debug("Could not remove thumbnail sidecar %s: %s", thumb, exc)
 
-    def _run_download(self, request: DownloadRequest) -> Path:
+    def _run_download(self, request: DownloadRequest) -> tuple[Path, bool]:
         path = self.unique_audio_path(request.title, request.artist, request.album, request.source_id)
         artist_dir = path.parent
         artist_dir.mkdir(parents=True, exist_ok=True)
         if path.is_file():
             self._tag_from_request_only(path, request)
-            return path
+            return path, False
         output_template = str(artist_dir / f"{path.stem}.%(ext)s")
         options = self._ytdlp_options(output_template, path)
         inp = _yt_dlp_input_for_request(request)
@@ -286,4 +333,4 @@ class DownloadService:
         if not path.is_file():
             raise RuntimeError(f"Download produced no file for: {inp}")
         self._tag_after_download(path, request, artist_dir, info)
-        return path
+        return path, True

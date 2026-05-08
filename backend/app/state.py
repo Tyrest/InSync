@@ -9,8 +9,10 @@ from app.database import SessionLocal
 from app.models.app_config import AppConfig
 from app.platforms.registry import PlatformRegistry
 from app.services.app_config import get_effective_setting, set_setting
+from app.services.audio_trimmer import AudioTrimmer
 from app.services.download import AudioConfig, DownloadService
 from app.services.jellyfin import JellyfinClient
+from app.services.sponsorblock import SponsorBlockClient
 from app.services.sync_engine import SyncEngine
 
 if TYPE_CHECKING:
@@ -21,8 +23,20 @@ class AppState:
     def __init__(self) -> None:
         settings = get_settings()
         self.registry = PlatformRegistry()
-        ac = AudioConfig(format=settings.audio_format, quality=settings.audio_quality)
-        self.downloader = DownloadService(settings.music_dir, settings.download_concurrency, ac)
+
+        sponsorblock_client = None
+        audio_trimmer = None
+        if settings.sponsorblock_enabled and settings.sponsorblock_category_list:
+            sponsorblock_client = SponsorBlockClient(categories=settings.sponsorblock_category_list)
+            audio_trimmer = AudioTrimmer()
+
+        self.downloader = DownloadService(
+            music_dir=settings.music_dir,
+            concurrency=settings.download_concurrency,
+            audio_config=AudioConfig(format=settings.audio_format, quality=settings.audio_quality),
+            sponsorblock_client=sponsorblock_client,
+            audio_trimmer=audio_trimmer,
+        )
         jellyfin_url = str(settings.jellyfin_url) if settings.jellyfin_url else ""
         self.jellyfin = JellyfinClient(jellyfin_url, settings.jellyfin_api_key)
         self.sync_engine = SyncEngine(SessionLocal, self.registry, self.downloader, self.jellyfin)

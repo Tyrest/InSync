@@ -4,6 +4,10 @@ from pathlib import Path
 from pydantic import AnyHttpUrl, Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+VALID_SPONSORBLOCK_CATEGORIES: frozenset[str] = frozenset(
+    {"sponsor", "intro", "outro", "selfpromo", "interaction", "music_offtopic", "filler"}
+)
+
 
 def _normalize_base_url(base_url: str) -> str:
     if not base_url:
@@ -40,6 +44,8 @@ class Settings(BaseSettings):
     server_timezone: str = "America/New_York"
     audio_format: str = "opus"
     audio_quality: str = "128"
+    sponsorblock_enabled: bool = False
+    sponsorblock_categories: str = "sponsor,intro,outro,selfpromo"
 
     @computed_field
     @property
@@ -53,6 +59,20 @@ class Settings(BaseSettings):
             return self.database_url
         db_path = self.data_dir / "music_sync.sqlite3"
         return f"sqlite:///{db_path}"
+
+    @computed_field
+    @property
+    def sponsorblock_category_list(self) -> list[str]:
+        """Parsed and validated list of SponsorBlock categories."""
+        if not self.sponsorblock_categories.strip():
+            return []
+        categories = [c.strip() for c in self.sponsorblock_categories.split(",") if c.strip()]
+        unknown = [c for c in categories if c not in VALID_SPONSORBLOCK_CATEGORIES]
+        if unknown:
+            raise ValueError(
+                f"Invalid SponsorBlock categories: {unknown}. Valid values are: {sorted(VALID_SPONSORBLOCK_CATEGORIES)}"
+            )
+        return categories
 
 
 @lru_cache
