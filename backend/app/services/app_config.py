@@ -25,3 +25,12 @@ def set_setting(db: Session, key: str, value: str) -> None:
         row.value = value
     else:
         db.add(AppConfig(key=key, value=value))
+
+
+def delete_setting(db: Session, key: str) -> bool:
+    """Delete a setting row. Returns True if a row was deleted, False if it didn't exist."""
+    row = db.scalar(select(AppConfig).where(AppConfig.key == key))
+    if row:
+        db.delete(row)
+        return True
+    return False

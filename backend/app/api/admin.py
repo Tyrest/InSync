@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,7 +11,7 @@ from app.database import get_db
 from app.models.app_config import AppConfig
 from app.models.download_task import DownloadTask
 from app.models.user import User
-from app.services.app_config import set_setting
+from app.services.app_config import delete_setting, set_setting
 from app.state import app_state, hydrate_audio_config_from_db, hydrate_jellyfin_from_db
 
 router = APIRouter()
@@ -175,4 +175,29 @@ def update_settings(
     hydrate_audio_config_from_db(db)
     if app_state.scheduler and ("sync_hour" in changes or "server_timezone" in changes):
         app_state.scheduler.reschedule()
+    return SettingsUpdateResponse(status="ok")
+
+
+_DELETABLE_KEYS = frozenset(
+    {
+        "spotify_client_id",
+        "spotify_client_secret",
+        "google_client_id",
+        "google_client_secret",
+        "jellyfin_api_key",
+        "oauth_redirect_base_url",
+        "webhook_url",
+        "webhook_secret",
+    }
+)
+
+
+@router.delete("/settings/{key}", response_model=SettingsUpdateResponse)
+def delete_setting_endpoint(
+    key: str, _: User = Depends(require_admin), db: Session = Depends(get_db)
+) -> SettingsUpdateResponse:
+    if key not in _DELETABLE_KEYS:
+        raise HTTPException(status_code=400, detail=f"Key '{key}' cannot be deleted")
+    delete_setting(db, key)
+    db.commit()
     return SettingsUpdateResponse(status="ok")

@@ -39,16 +39,23 @@ export function AdminPage(): JSX.Element {
     setConcurrency(cfg.download_concurrency ?? "3");
     setSyncHour(cfg.sync_hour ?? "2");
     setSpotifyClientId(cfg.spotify_client_id ?? "");
-    setSpotifyClientSecret(cfg.spotify_client_secret ?? "");
+    // Secret fields are never pre-filled — the API returns masked values and we
+    // don't want to round-trip them back. Leave blank; placeholder shows status.
+    setSpotifyClientSecret("");
     setGoogleClientId(cfg.google_client_id ?? "");
-    setGoogleClientSecret(cfg.google_client_secret ?? "");
+    setGoogleClientSecret("");
     setOauthRedirectBaseUrl(cfg.oauth_redirect_base_url ?? "");
     setServerTimezone(cfg.server_timezone ?? "");
     setAudioFormat(cfg.audio_format ?? "opus");
     setAudioQuality(cfg.audio_quality ?? "128");
     setWebhookUrl(cfg.webhook_url ?? "");
-    setWebhookSecret(cfg.webhook_secret ?? "");
+    setWebhookSecret("");
     setWebhookEvents(cfg.webhook_events ?? "sync_complete,sync_failed");
+  }
+
+  async function unsetSecret(key: string) {
+    await apiFetch(`/admin/settings/${key}`, { method: "DELETE" });
+    await load();
   }
 
   async function save() {
@@ -138,7 +145,12 @@ export function AdminPage(): JSX.Element {
           </label>
           <label className="flex flex-col gap-1">
             <span>Spotify Client Secret</span>
-            <input className="rounded bg-zinc-800 p-2" type="password" value={spotifyClientSecret} onChange={(e) => setSpotifyClientSecret(e.target.value)} />
+            <div className="flex gap-2">
+              <input className="flex-1 rounded bg-zinc-800 p-2" type="password" placeholder={settings.spotify_client_secret ? "leave blank to keep existing" : "not set"} value={spotifyClientSecret} onChange={(e) => setSpotifyClientSecret(e.target.value)} />
+              {settings.spotify_client_secret && (
+                <button className="rounded bg-zinc-700 px-2 py-1 text-xs hover:bg-red-700" onClick={() => void unsetSecret("spotify_client_secret")}>Unset</button>
+              )}
+            </div>
           </label>
           <label className="flex flex-col gap-1">
             <span>Google Client ID</span>
@@ -146,7 +158,12 @@ export function AdminPage(): JSX.Element {
           </label>
           <label className="flex flex-col gap-1">
             <span>Google Client Secret</span>
-            <input className="rounded bg-zinc-800 p-2" type="password" value={googleClientSecret} onChange={(e) => setGoogleClientSecret(e.target.value)} />
+            <div className="flex gap-2">
+              <input className="flex-1 rounded bg-zinc-800 p-2" type="password" placeholder={settings.google_client_secret ? "leave blank to keep existing" : "not set"} value={googleClientSecret} onChange={(e) => setGoogleClientSecret(e.target.value)} />
+              {settings.google_client_secret && (
+                <button className="rounded bg-zinc-700 px-2 py-1 text-xs hover:bg-red-700" onClick={() => void unsetSecret("google_client_secret")}>Unset</button>
+              )}
+            </div>
           </label>
           <label className="flex flex-col gap-1 md:col-span-2">
             <span>OAuth Redirect Base URL (optional)</span>
@@ -163,7 +180,12 @@ export function AdminPage(): JSX.Element {
           </label>
           <label className="flex flex-col gap-1">
             <span>Webhook Secret</span>
-            <input className="rounded bg-zinc-800 p-2" type="password" value={webhookSecret} onChange={(e) => setWebhookSecret(e.target.value)} />
+            <div className="flex gap-2">
+              <input className="flex-1 rounded bg-zinc-800 p-2" type="password" placeholder={settings.webhook_secret ? "leave blank to keep existing" : "not set"} value={webhookSecret} onChange={(e) => setWebhookSecret(e.target.value)} />
+              {settings.webhook_secret && (
+                <button className="rounded bg-zinc-700 px-2 py-1 text-xs hover:bg-red-700" onClick={() => void unsetSecret("webhook_secret")}>Unset</button>
+              )}
+            </div>
           </label>
           <label className="flex flex-col gap-1">
             <span>Events (comma-separated)</span>
