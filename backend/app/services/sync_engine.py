@@ -410,40 +410,13 @@ class SyncEngine:
             if any_success:
                 log.info("Refreshing Jellyfin library after new downloads (user_id=%s)", user_id)
                 await self.jellyfin_client.refresh_library()
+                log.info("Waiting for Jellyfin library refresh to complete (user_id=%s)", user_id)
+                await self.jellyfin_client.wait_for_library_refresh()
         else:
             log.info("Sync user_id=%s: no new downloads queued", user_id)
 
         all_synced = db.scalars(select(SyncedPlaylist).where(SyncedPlaylist.user_id == user_id)).all()
-        log.info("Pushing %s synced playlist(s) to Jellyfin for user_id=%s", len(all_synced), user_id)
-        for playlist in all_synced:
-            raw_paths = playlist_track_paths.get(playlist.id, [])
-            ordered_paths = [p for p in raw_paths if p is not None]
-            item_ids = await self.jellyfin_client.resolve_item_ids_by_paths(
-                user.jellyfin_user_id,
-                ordered_paths,
-            )
-            log.info(
-                "Playlist '%s' (id=%s): %s ordered paths -> %s resolved Jellyfin item IDs",
-                playlist.platform_playlist_name,
-                playlist.id,
-                len(ordered_paths),
-                len(item_ids),
-            )
-            if ordered_paths and not item_ids:
-                log.warning(
-                    "Playlist '%s': all paths unresolved — check that container mount paths match "
-                    "between InSync and Jellyfin",
-                    playlist.platform_playlist_name,
-                )
-            playlist_id = await self.jellyfin_client.create_or_update_playlist(
-                user_id=user.jellyfin_user_id,
-                playlist_name=playlist.platform_playlist_name,
-                item_ids=item_ids,
-                playlist_id=playlist.jellyfin_playlist_id,
-            )
-            if playlist_id:
-                playlist.jellyfin_playlist_id = playlist_id
-        db.commit()
+        await self._push_playlists_to_jellyfin(all_synced, playlist_track_paths, user, db)
         log.info("Sync finished user_id=%s", user_id)
 
         # Webhook notification
@@ -548,36 +521,67 @@ class SyncEngine:
                     )
                     if any_success:
                         await self.jellyfin_client.refresh_library()
+                        log.info("Waiting for Jellyfin library refresh to complete for single playlist")
+                        await self.jellyfin_client.wait_for_library_refresh()
 
-                raw_paths = playlist_track_paths.get(synced.id, [])
-                ordered = [p for p in raw_paths if p is not None]
-                item_ids = await self.jellyfin_client.resolve_item_ids_by_paths(user.jellyfin_user_id, ordered)
-                log.info(
-                    "Single-playlist '%s' (id=%s): %s ordered paths -> %s resolved Jellyfin item IDs",
-                    synced.platform_playlist_name,
-                    synced.id,
-                    len(ordered),
-                    len(item_ids),
-                )
-                if ordered and not item_ids:
-                    log.warning(
-                        "Single-playlist '%s': all paths unresolved — check that container mount paths match "
-                        "between InSync and Jellyfin",
-                        synced.platform_playlist_name,
-                    )
-                jf_id = await self.jellyfin_client.create_or_update_playlist(
-                    user_id=user.jellyfin_user_id,
-                    playlist_name=synced.platform_playlist_name,
-                    item_ids=item_ids,
-                    playlist_id=synced.jellyfin_playlist_id,
-                )
-                if jf_id:
-                    synced.jellyfin_playlist_id = jf_id
-                db.commit()
+                await self._push_playlists_to_jellyfin([synced], playlist_track_paths, user, db)
                 log.info("Single-playlist sync finished: playlist_id=%s user_id=%s", synced_playlist_id, user_id)
             finally:
                 self._running_user_ids.discard(user_id)
                 db.close()
+
+    async def _push_playlists_to_jellyfin(
+        self,
+        playlists: list[SyncedPlaylist],
+        playlist_track_paths: dict[int, list[str | None]],
+        user: User,
+        db: Session,
+    ) -> None:
+        """Push synced playlists to Jellyfin.
+        
+        Resolves file paths to Jellyfin item IDs and creates or updates
+        Jellyfin playlists. Commits changes to the database.
+        """
+        log.info("Pushing %s synced playlist(s) to Jellyfin for user_id=%s", len(playlists), user.id)
+        for playlist in playlists:
+            raw_paths = playlist_track_paths.get(playlist.id, [])
+            ordered_paths = [p for p in raw_paths if p is not None]
+            log.debug(
+                "Jellyfin push: playlist %s has %s tracks to resolve",
+                playlist.platform_playlist_name,
+                len(ordered_paths),
+            )
+            if ordered_paths:
+                log.debug(
+                    "Sample paths to resolve: %s",
+                    ordered_paths[:3],
+                )
+            item_ids = await self.jellyfin_client.resolve_item_ids_by_paths(
+                user.jellyfin_user_id,
+                ordered_paths,
+            )
+            log.info(
+                "Playlist '%s' (id=%s): %s ordered paths -> %s resolved Jellyfin item IDs",
+                playlist.platform_playlist_name,
+                playlist.id,
+                len(ordered_paths),
+                len(item_ids),
+            )
+            if ordered_paths and not item_ids:
+                log.warning(
+                    "Playlist '%s': all paths unresolved — check that container mount paths match "
+                    "between InSync and Jellyfin",
+                    playlist.platform_playlist_name,
+                )
+            playlist_id = await self.jellyfin_client.create_or_update_playlist(
+                user_id=user.jellyfin_user_id,
+                playlist_name=playlist.platform_playlist_name,
+                item_ids=item_ids,
+                playlist_id=playlist.jellyfin_playlist_id,
+            )
+            if playlist_id:
+                playlist.jellyfin_playlist_id = playlist_id
+        db.commit()
 
     def _persist_downloaded_track(
         self,

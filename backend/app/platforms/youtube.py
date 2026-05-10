@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 import httpx
-from app.platforms.base import PlatformConnector, PlaylistInfo, TrackInfo
+from app.platforms.base import PlatformConnector, PlaylistInfo, TrackInfo, _load_mock_playlists
 from app.services.app_config import get_effective_setting
 from sqlalchemy.orm import Session
 from ytmusicapi import YTMusic
@@ -141,26 +141,9 @@ class YouTubeConnector(PlatformConnector):
         )
 
     async def fetch_playlists(self, credentials: dict) -> list[PlaylistInfo]:
-        if "mock_playlists" in credentials:
-            playlists: list[PlaylistInfo] = []
-            for raw in credentials["mock_playlists"]:
-                tracks = [
-                    TrackInfo(
-                        source_id=track["source_id"],
-                        title=track["title"],
-                        artist=track.get("artist", "Unknown Artist"),
-                        album=track.get("album", "Singles"),
-                    )
-                    for track in raw.get("tracks", [])
-                ]
-                playlists.append(
-                    PlaylistInfo(
-                        playlist_id=raw["playlist_id"],
-                        name=raw["name"],
-                        tracks=tracks,
-                    )
-                )
-            return playlists
+        mock_playlists = _load_mock_playlists(credentials)
+        if mock_playlists:
+            return mock_playlists
 
         access_token = credentials.get("access_token")
         if access_token:
@@ -217,12 +200,29 @@ class YouTubeConnector(PlatformConnector):
                 params = {"part": "snippet,contentDetails", "mine": "true", "maxResults": 50}
                 if next_page_token:
                     params["pageToken"] = next_page_token
-                response = await client.get(
-                    "https://www.googleapis.com/youtube/v3/playlists",
-                    params=params,
-                    headers=headers,
-                )
-                response.raise_for_status()
+                try:
+                    response = await client.get(
+                        "https://www.googleapis.com/youtube/v3/playlists",
+                        params=params,
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    # Log response body for diagnostics and raise a clearer error
+                    try:
+                        body = exc.response.json()
+                    except Exception:
+                        body = exc.response.text
+                    log.warning(
+                        "YouTube API playlists fetch failed (status=%s): %s",
+                        exc.response.status_code,
+                        str(body)[:1000],
+                    )
+                    raise ValueError(
+                        "YouTube API error fetching playlists: check that the OAuth token has the 'youtube.readonly' scope, "
+                        "that the Google project has YouTube Data API enabled, and that the token is valid and not revoked. "
+                        f"(status={exc.response.status_code})"
+                    ) from exc
                 payload = response.json()
                 for item in payload.get("items", []):
                     playlist_id = item.get("id")
@@ -250,12 +250,28 @@ class YouTubeConnector(PlatformConnector):
             params = {"part": "snippet,contentDetails", "playlistId": playlist_id, "maxResults": 50}
             if next_page_token:
                 params["pageToken"] = next_page_token
-            response = await client.get(
-                "https://www.googleapis.com/youtube/v3/playlistItems",
-                params=params,
-                headers=headers,
-            )
-            response.raise_for_status()
+            try:
+                response = await client.get(
+                    "https://www.googleapis.com/youtube/v3/playlistItems",
+                    params=params,
+                    headers=headers,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                try:
+                    body = exc.response.json()
+                except Exception:
+                    body = exc.response.text
+                log.warning(
+                    "YouTube API playlistItems fetch failed (playlist=%s status=%s): %s",
+                    playlist_id,
+                    exc.response.status_code,
+                    str(body)[:1000],
+                )
+                raise ValueError(
+                    "YouTube API error fetching playlist items: ensure the OAuth token and project permissions are correct. "
+                    f"(status={exc.response.status_code})"
+                ) from exc
             payload = response.json()
             for item in payload.get("items", []):
                 snippet = item.get("snippet") or {}

@@ -3,7 +3,7 @@ from urllib.parse import urlencode
 
 import httpx
 import spotipy
-from app.platforms.base import PlatformConnector, PlaylistInfo, TrackInfo
+from app.platforms.base import PlatformConnector, PlaylistInfo, TrackInfo, _load_mock_playlists
 from app.services.app_config import get_effective_setting
 from sqlalchemy.orm import Session
 
@@ -109,27 +109,9 @@ class SpotifyConnector(PlatformConnector):
         return credentials
 
     async def fetch_playlists(self, credentials: dict) -> list[PlaylistInfo]:
-        if "mock_playlists" in credentials:
-            playlists: list[PlaylistInfo] = []
-            for raw in credentials["mock_playlists"]:
-                tracks = [
-                    TrackInfo(
-                        source_id=track["source_id"],
-                        title=track["title"],
-                        artist=track.get("artist", "Unknown Artist"),
-                        album=track.get("album", "Singles"),
-                        isrc=track.get("isrc"),
-                    )
-                    for track in raw.get("tracks", [])
-                ]
-                playlists.append(
-                    PlaylistInfo(
-                        playlist_id=raw["playlist_id"],
-                        name=raw["name"],
-                        tracks=tracks,
-                    )
-                )
-            return playlists
+        mock_playlists = _load_mock_playlists(credentials)
+        if mock_playlists:
+            return mock_playlists
 
         access_token = credentials.get("access_token")
         if not access_token:

@@ -21,6 +21,36 @@ class PlaylistInfo:
     tracks: list[TrackInfo]
 
 
+def _load_mock_playlists(credentials: dict) -> list[PlaylistInfo]:
+    """Load mock playlists from credentials dict for testing.
+    
+    Used by platform connectors when 'mock_playlists' key exists in credentials.
+    """
+    if "mock_playlists" not in credentials:
+        return []
+    
+    playlists: list[PlaylistInfo] = []
+    for raw in credentials["mock_playlists"]:
+        tracks = [
+            TrackInfo(
+                source_id=track["source_id"],
+                title=track["title"],
+                artist=track.get("artist", "Unknown Artist"),
+                album=track.get("album", "Singles"),
+                isrc=track.get("isrc"),
+            )
+            for track in raw.get("tracks", [])
+        ]
+        playlists.append(
+            PlaylistInfo(
+                playlist_id=raw["playlist_id"],
+                name=raw["name"],
+                tracks=tracks,
+            )
+        )
+    return playlists
+
+
 class PlatformConnector(ABC):
     name: str
 
