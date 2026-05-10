@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any
 
@@ -40,6 +41,42 @@ class JellyfinClient:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(f"{self.base_url}/Library/Refresh", headers=self._headers())
             response.raise_for_status()
+
+    async def wait_for_library_refresh(self, timeout_seconds: int = 300, poll_interval: float = 2.0) -> bool:
+        """Wait for Jellyfin library refresh to complete.
+
+        Polls the /System/Activities endpoint to check if a library scan is in progress.
+        Returns True if scan completed, False if timed out.
+        """
+        end_time = asyncio.get_event_loop().time() + timeout_seconds
+        async with httpx.AsyncClient(timeout=20) as client:
+            while asyncio.get_event_loop().time() < end_time:
+                try:
+                    response = await client.get(
+                        f"{self.base_url}/System/Activities",
+                        headers=self._headers(),
+                    )
+                    response.raise_for_status()
+                    activities = response.json().get("Activities", [])
+                    # Check if any activity is a library scan
+                    has_scan = any(
+                        act.get("Type") == "LibraryRefresh" or "scan" in act.get("Name", "").lower()
+                        for act in activities
+                    )
+                    if not has_scan:
+                        log.info("Jellyfin library refresh completed")
+                        return True
+                except Exception:
+                    log.debug(
+                        "Could not poll library refresh status (may not be supported by this Jellyfin version)",
+                        exc_info=False,
+                    )
+                    # If polling doesn't work, just wait a bit anyway
+                    await asyncio.sleep(poll_interval)
+                    continue
+                await asyncio.sleep(poll_interval)
+        log.warning("Jellyfin library refresh timed out after %s seconds", timeout_seconds)
+        return False
 
     # --- playlist management ---
 
@@ -124,6 +161,16 @@ class JellyfinClient:
                 sample,
                 jf_sample,
             )
+            # Enhanced debugging: show sample comparisons
+            if path_to_id:
+                log.debug(
+                    "Path resolution debug: Input paths to resolve: %s",
+                    [fp[:100] for fp in unresolved[:3]],
+                )
+                log.debug(
+                    "Path resolution debug: First 5 Jellyfin paths in map: %s",
+                    [p[:100] for p in list(path_to_id.keys())[:5]],
+                )
         else:
             log.info("Jellyfin path resolution: all %s paths resolved", len(file_paths))
         return result
@@ -133,6 +180,7 @@ class JellyfinClient:
         path_map: dict[str, str] = {}
         start_index = 0
         page_size = 5000
+        total_items = 0
         async with httpx.AsyncClient(timeout=60) as client:
             while True:
                 response = await client.get(
@@ -149,12 +197,20 @@ class JellyfinClient:
                 response.raise_for_status()
                 data = response.json()
                 items = data.get("Items", [])
+                total_items = data.get("TotalRecordCount", 0)
                 for item in items:
                     p = (item.get("Path") or "").lower()
                     if p:
                         path_map[p] = str(item["Id"])
-                total = data.get("TotalRecordCount", 0)
                 start_index += len(items)
-                if start_index >= total or not items:
+                if start_index >= total_items or not items:
                     break
+        log.debug(
+            "Built Jellyfin path_id_map: %s total items in library, %s paths indexed",
+            total_items,
+            len(path_map),
+        )
+        if path_map:
+            sample_paths = list(path_map.keys())[:3]
+            log.debug("Sample Jellyfin paths in library: %s", sample_paths)
         return path_map
