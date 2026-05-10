@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -532,13 +533,13 @@ class SyncEngine:
 
     async def _push_playlists_to_jellyfin(
         self,
-        playlists: list[SyncedPlaylist],
+        playlists: Sequence[SyncedPlaylist],
         playlist_track_paths: dict[int, list[str | None]],
         user: User,
         db: Session,
     ) -> None:
         """Push synced playlists to Jellyfin.
-        
+
         Resolves file paths to Jellyfin item IDs and creates or updates
         Jellyfin playlists. Commits changes to the database.
         """

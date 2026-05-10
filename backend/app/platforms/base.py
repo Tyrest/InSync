@@ -23,12 +23,12 @@ class PlaylistInfo:
 
 def _load_mock_playlists(credentials: dict) -> list[PlaylistInfo]:
     """Load mock playlists from credentials dict for testing.
-    
+
     Used by platform connectors when 'mock_playlists' key exists in credentials.
     """
     if "mock_playlists" not in credentials:
         return []
-    
+
     playlists: list[PlaylistInfo] = []
     for raw in credentials["mock_playlists"]:
         tracks = [

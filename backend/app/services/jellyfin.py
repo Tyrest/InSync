@@ -44,7 +44,7 @@ class JellyfinClient:
 
     async def wait_for_library_refresh(self, timeout_seconds: int = 300, poll_interval: float = 2.0) -> bool:
         """Wait for Jellyfin library refresh to complete.
-        
+
         Polls the /System/Activities endpoint to check if a library scan is in progress.
         Returns True if scan completed, False if timed out.
         """
@@ -67,7 +67,10 @@ class JellyfinClient:
                         log.info("Jellyfin library refresh completed")
                         return True
                 except Exception:
-                    log.debug("Could not poll library refresh status (may not be supported by this Jellyfin version)", exc_info=False)
+                    log.debug(
+                        "Could not poll library refresh status (may not be supported by this Jellyfin version)",
+                        exc_info=False,
+                    )
                     # If polling doesn't work, just wait a bit anyway
                     await asyncio.sleep(poll_interval)
                     continue

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from urllib.parse import urlencode
 
@@ -8,6 +9,8 @@ from app.platforms.base import PlatformConnector, PlaylistInfo, TrackInfo, _load
 from app.services.app_config import get_effective_setting
 from sqlalchemy.orm import Session
 from ytmusicapi import YTMusic
+
+log = logging.getLogger(__name__)
 
 
 def _oauth_error_message(response: httpx.Response) -> str:
@@ -195,6 +198,7 @@ class YouTubeConnector(PlatformConnector):
         headers = {"Authorization": f"Bearer {access_token}"}
         playlists: list[PlaylistInfo] = []
         next_page_token: str | None = None
+        log = logging.getLogger(__name__)
         async with httpx.AsyncClient(timeout=20) as client:
             while True:
                 params = {"part": "snippet,contentDetails", "mine": "true", "maxResults": 50}
@@ -218,11 +222,13 @@ class YouTubeConnector(PlatformConnector):
                         exc.response.status_code,
                         str(body)[:1000],
                     )
-                    raise ValueError(
-                        "YouTube API error fetching playlists: check that the OAuth token has the 'youtube.readonly' scope, "
-                        "that the Google project has YouTube Data API enabled, and that the token is valid and not revoked. "
+                    msg = (
+                        "YouTube API error fetching playlists: check that the OAuth token has the "
+                        "'youtube.readonly' scope, that the Google project has YouTube Data API enabled, "
+                        "and that the token is valid and not revoked. "
                         f"(status={exc.response.status_code})"
-                    ) from exc
+                    )
+                    raise ValueError(msg) from exc
                 payload = response.json()
                 for item in payload.get("items", []):
                     playlist_id = item.get("id")
@@ -268,10 +274,12 @@ class YouTubeConnector(PlatformConnector):
                     exc.response.status_code,
                     str(body)[:1000],
                 )
-                raise ValueError(
-                    "YouTube API error fetching playlist items: ensure the OAuth token and project permissions are correct. "
+                msg = (
+                    "YouTube API error fetching playlist items: ensure the OAuth token "
+                    "and project permissions are correct. "
                     f"(status={exc.response.status_code})"
-                ) from exc
+                )
+                raise ValueError(msg) from exc
             payload = response.json()
             for item in payload.get("items", []):
                 snippet = item.get("snippet") or {}
