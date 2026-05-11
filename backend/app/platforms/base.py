@@ -88,6 +88,11 @@ class PlatformConnector(ABC):
     @abstractmethod
     async def fetch_playlists(self, credentials: dict) -> list[PlaylistInfo]: ...
 
+    async def fetch_playlist(self, credentials: dict, playlist_id: str) -> PlaylistInfo | None:
+        """Fetch a single playlist by ID. Default: calls fetch_playlists and filters."""
+        playlists = await self.fetch_playlists(credentials)
+        return next((p for p in playlists if p.playlist_id == playlist_id), None)
+
     @abstractmethod
     async def search_track(self, query: str) -> TrackInfo | None: ...
 

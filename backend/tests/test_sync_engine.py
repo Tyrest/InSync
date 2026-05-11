@@ -364,6 +364,7 @@ def _build_sync_engine_with_session(session: Session, playlist_info: "PlaylistIn
         side_effect=lambda *, credentials, client_id, client_secret: credentials
     )
     mock_connector.fetch_playlists = AsyncMock(return_value=[playlist_info])
+    mock_connector.fetch_playlist = AsyncMock(return_value=playlist_info)
     mock_connector.search_track = AsyncMock(return_value=None)
 
     mock_registry = MagicMock()
@@ -606,7 +607,7 @@ def test_sync_continues_after_per_playlist_failure(failing_index: int) -> None:
             user,
             synced,
             link,
-            credentials,
+            playlist,
             playlist_track_paths,
             download_queue,
             source_id_to_idx,
@@ -621,7 +622,7 @@ def test_sync_continues_after_per_playlist_failure(failing_index: int) -> None:
                 user=user,
                 synced=synced,
                 link=link,
-                credentials=credentials,
+                playlist=playlist,
                 playlist_track_paths=playlist_track_paths,
                 download_queue=download_queue,
                 source_id_to_idx=source_id_to_idx,

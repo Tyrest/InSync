@@ -178,6 +178,35 @@ class YouTubeConnector(PlatformConnector):
             result.append(PlaylistInfo(playlist_id=playlist_id, name=playlist["title"], tracks=tracks))
         return result
 
+    async def fetch_playlist(self, credentials: dict, playlist_id: str) -> PlaylistInfo | None:
+        """Fetch a single YouTube playlist by ID without fetching all others."""
+        mock_playlists = _load_mock_playlists(credentials)
+        if mock_playlists:
+            return next((p for p in mock_playlists if p.playlist_id == playlist_id), None)
+
+        access_token = credentials.get("access_token")
+        if not access_token:
+            # Fall back to full fetch for oauth_json path (ytmusicapi)
+            return await super().fetch_playlist(credentials, playlist_id)
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with httpx.AsyncClient(timeout=20) as client:
+            try:
+                response = await client.get(
+                    "https://www.googleapis.com/youtube/v3/playlists",
+                    params={"part": "snippet", "id": playlist_id},
+                    headers=headers,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise ValueError(f"YouTube API error fetching playlist: {exc.response.status_code}") from exc
+            items = response.json().get("items", [])
+            if not items:
+                return None
+            name = (items[0].get("snippet") or {}).get("title", "Untitled")
+            tracks = await self._fetch_playlist_items(client, headers, playlist_id)
+        return PlaylistInfo(playlist_id=playlist_id, name=name, tracks=tracks)
+
     async def search_track(self, query: str) -> TrackInfo | None:
         ytm = YTMusic()
         results = ytm.search(query, filter="songs", limit=1)
