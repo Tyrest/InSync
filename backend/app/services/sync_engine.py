@@ -486,9 +486,7 @@ class SyncEngine:
 
                 playlist = await connector.fetch_playlist(credentials, synced.platform_playlist_id)
                 if not playlist:
-                    log.warning(
-                        "Single-playlist sync: upstream playlist %s not found", synced.platform_playlist_id
-                    )
+                    log.warning("Single-playlist sync: upstream playlist %s not found", synced.platform_playlist_id)
                     return
 
                 await self._sync_one_playlist(
