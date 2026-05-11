@@ -312,7 +312,8 @@ class SyncEngine:
                 continue
             playlists = await connector.fetch_playlists(credentials)
             enabled_count = sum(
-                1 for p in playlists
+                1
+                for p in playlists
                 if db.scalar(
                     select(SyncedPlaylist).where(
                         SyncedPlaylist.user_id == user_id,
@@ -320,7 +321,8 @@ class SyncEngine:
                         SyncedPlaylist.platform_playlist_id == p.playlist_id,
                         SyncedPlaylist.enabled.is_(True),
                     )
-                ) is not None
+                )
+                is not None
             )
             log.info(
                 "Platform %s: fetched %d playlist(s), %d enabled",
@@ -383,7 +385,6 @@ class SyncEngine:
             any_success = False
             total_downloads = len(download_queue)
             finished_count = 0
-            t_downloads = datetime.now(UTC)
 
             async def on_each_download_result(idx: int, result: DownloadResult) -> None:
                 nonlocal any_success, finished_count
