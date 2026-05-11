@@ -97,6 +97,11 @@ class SyncEngine:
         playlist_track_paths[synced.id] = [None] * len(playlist.tracks)
         db.execute(delete(SyncedPlaylistTrack).where(SyncedPlaylistTrack.synced_playlist_id == synced.id))
 
+        already = 0
+        from_disk = 0
+        queued = 0
+        deduped = 0
+
         for pos, track in enumerate(playlist.tracks):
             canonical = track
             if link.platform == "spotify":
@@ -132,6 +137,7 @@ class SyncEngine:
                         position=pos,
                     )
                 )
+                already += 1
                 continue
 
             disk_path = self.downloader.first_existing_audio_path(
@@ -150,7 +156,8 @@ class SyncEngine:
                                 position=pos,
                             )
                         )
-                        log.info("Linked track on disk (DB path match): %s — %s", track.artist, track.title)
+                        log.debug("Linked track on disk (DB path match): %s — %s", track.artist, track.title)
+                        already += 1
                         continue
                     log.warning(
                         "File %s exists but is tied to source_id=%s (expected %s); will try normal download",
@@ -198,11 +205,12 @@ class SyncEngine:
                                 position=pos,
                             )
                         )
-                        log.info(
+                        log.debug(
                             "Imported file from disk into DB (skipped download): %s — %s",
                             track.artist,
                             track.title,
                         )
+                        from_disk += 1
                         continue
 
             # Deduplicate: if this source_id is already queued, just
@@ -215,6 +223,7 @@ class SyncEngine:
                     synced.id,
                     pos,
                 )
+                deduped += 1
                 continue
 
             task = DownloadTask(
@@ -243,9 +252,22 @@ class SyncEngine:
                     task.id,
                 )
             )
+            queued += 1
+
         synced.last_synced = datetime.now(UTC)
+        log.info(
+            "Playlist '%s' (%s): %d track(s) — %d in library, %d from disk, %d queued for download, %d deduped",
+            synced.platform_playlist_name,
+            link.platform,
+            len(playlist.tracks),
+            already,
+            from_disk,
+            queued,
+            deduped,
+        )
 
     async def run_user_sync(self, db: Session, user_id: int) -> None:
+        t_start = datetime.now(UTC)
         log.info("Sync started user_id=%s", user_id)
         links = db.scalars(select(PlatformLink).where(PlatformLink.user_id == user_id)).all()
         playlist_track_paths: dict[int, list[str | None]] = {}
@@ -289,7 +311,23 @@ class SyncEngine:
                 )
                 continue
             playlists = await connector.fetch_playlists(credentials)
-            log.info("Platform %s: fetched %s playlist(s)", link.platform, len(playlists))
+            enabled_count = sum(
+                1 for p in playlists
+                if db.scalar(
+                    select(SyncedPlaylist).where(
+                        SyncedPlaylist.user_id == user_id,
+                        SyncedPlaylist.platform == link.platform,
+                        SyncedPlaylist.platform_playlist_id == p.playlist_id,
+                        SyncedPlaylist.enabled.is_(True),
+                    )
+                ) is not None
+            )
+            log.info(
+                "Platform %s: fetched %d playlist(s), %d enabled",
+                link.platform,
+                len(playlists),
+                enabled_count,
+            )
             for playlist in playlists:
                 synced = db.scalar(
                     select(SyncedPlaylist).where(
@@ -334,8 +372,9 @@ class SyncEngine:
 
         already_in_library = sum(1 for paths in playlist_track_paths.values() for p in paths if p is not None)
         log.info(
-            "Sync user_id=%s: playlist phase done; %s unique download(s) queued, %s track slot(s) already in library",
+            "Sync user_id=%s: playlist phase done in %.1fs — %d download(s) queued, %d already in library",
             user_id,
+            (datetime.now(UTC) - t_start).total_seconds(),
             len(download_queue),
             already_in_library,
         )
@@ -344,6 +383,7 @@ class SyncEngine:
             any_success = False
             total_downloads = len(download_queue)
             finished_count = 0
+            t_downloads = datetime.now(UTC)
 
             async def on_each_download_result(idx: int, result: DownloadResult) -> None:
                 nonlocal any_success, finished_count
@@ -416,7 +456,8 @@ class SyncEngine:
 
         all_synced = db.scalars(select(SyncedPlaylist).where(SyncedPlaylist.user_id == user_id)).all()
         await self._push_playlists_to_jellyfin(all_synced, playlist_track_paths, user, db)
-        log.info("Sync finished user_id=%s", user_id)
+        elapsed = (datetime.now(UTC) - t_start).total_seconds()
+        log.info("Sync finished user_id=%s in %.1fs", user_id, elapsed)
 
         # Webhook notification
         filled = sum(1 for paths in playlist_track_paths.values() for p in paths if p is not None)
@@ -544,36 +585,27 @@ class SyncEngine:
         Resolves file paths to Jellyfin item IDs and creates or updates
         Jellyfin playlists. Commits changes to the database.
         """
-        log.info("Pushing %s synced playlist(s) to Jellyfin for user_id=%s", len(playlists), user.id)
+        log.info("Pushing %d playlist(s) to Jellyfin for user_id=%s", len(playlists), user.id)
         for playlist in playlists:
             raw_paths = playlist_track_paths.get(playlist.id, [])
             ordered_paths = [p for p in raw_paths if p is not None]
-            log.debug(
-                "Jellyfin push: playlist %s has %s tracks to resolve",
-                playlist.platform_playlist_name,
-                len(ordered_paths),
-            )
-            if ordered_paths:
-                log.debug(
-                    "Sample paths to resolve: %s",
-                    ordered_paths[:3],
-                )
             item_ids = await self.jellyfin_client.resolve_item_ids_by_paths(
                 user.jellyfin_user_id,
                 ordered_paths,
             )
-            log.info(
-                "Playlist '%s' (id=%s): %s ordered paths -> %s resolved Jellyfin item IDs",
-                playlist.platform_playlist_name,
-                playlist.id,
-                len(ordered_paths),
-                len(item_ids),
-            )
             if ordered_paths and not item_ids:
                 log.warning(
-                    "Playlist '%s': all paths unresolved — check that container mount paths match "
-                    "between InSync and Jellyfin",
+                    "Playlist '%s': %d path(s) sent to Jellyfin but none resolved — "
+                    "check that container mount paths match between InSync and Jellyfin",
                     playlist.platform_playlist_name,
+                    len(ordered_paths),
+                )
+            else:
+                log.info(
+                    "Playlist '%s': %d/%d track(s) resolved in Jellyfin",
+                    playlist.platform_playlist_name,
+                    len(item_ids),
+                    len(ordered_paths),
                 )
             playlist_id = await self.jellyfin_client.create_or_update_playlist(
                 user_id=user.jellyfin_user_id,

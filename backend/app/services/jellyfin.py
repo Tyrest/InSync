@@ -48,12 +48,6 @@ class JellyfinClient:
     ) -> str:
         if not item_ids:
             return playlist_id or ""
-        log.info(
-            "Jellyfin playlist push: name=%s, items=%s, existing_id=%s",
-            playlist_name,
-            len(item_ids),
-            playlist_id,
-        )
         async with httpx.AsyncClient(timeout=60) as client:
             if playlist_id:
                 await self._clear_playlist(client, playlist_id, user_id)
@@ -124,18 +118,8 @@ class JellyfinClient:
                 sample,
                 jf_sample,
             )
-            # Enhanced debugging: show sample comparisons
-            if path_to_id:
-                log.debug(
-                    "Path resolution debug: Input paths to resolve: %s",
-                    [fp[:100] for fp in unresolved[:3]],
-                )
-                log.debug(
-                    "Path resolution debug: First 5 Jellyfin paths in map: %s",
-                    [p[:100] for p in list(path_to_id.keys())[:5]],
-                )
         else:
-            log.info("Jellyfin path resolution: all %s paths resolved", len(file_paths))
+            log.debug("Jellyfin path resolution: all %s paths resolved", len(file_paths))
         return result
 
     async def _build_path_id_map(self, user_id: str) -> dict[str, str]:
@@ -169,11 +153,8 @@ class JellyfinClient:
                 if start_index >= total_items or not items:
                     break
         log.debug(
-            "Built Jellyfin path_id_map: %s total items in library, %s paths indexed",
+            "Built Jellyfin path map: %d total items in library, %d paths indexed",
             total_items,
             len(path_map),
         )
-        if path_map:
-            sample_paths = list(path_map.keys())[:3]
-            log.debug("Sample Jellyfin paths in library: %s", sample_paths)
         return path_map
