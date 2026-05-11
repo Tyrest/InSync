@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import Any
 
@@ -41,42 +40,6 @@ class JellyfinClient:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(f"{self.base_url}/Library/Refresh", headers=self._headers())
             response.raise_for_status()
-
-    async def wait_for_library_refresh(self, timeout_seconds: int = 300, poll_interval: float = 2.0) -> bool:
-        """Wait for Jellyfin library refresh to complete.
-
-        Polls the /System/Activities endpoint to check if a library scan is in progress.
-        Returns True if scan completed, False if timed out.
-        """
-        end_time = asyncio.get_event_loop().time() + timeout_seconds
-        async with httpx.AsyncClient(timeout=20) as client:
-            while asyncio.get_event_loop().time() < end_time:
-                try:
-                    response = await client.get(
-                        f"{self.base_url}/System/Activities",
-                        headers=self._headers(),
-                    )
-                    response.raise_for_status()
-                    activities = response.json().get("Activities", [])
-                    # Check if any activity is a library scan
-                    has_scan = any(
-                        act.get("Type") == "LibraryRefresh" or "scan" in act.get("Name", "").lower()
-                        for act in activities
-                    )
-                    if not has_scan:
-                        log.info("Jellyfin library refresh completed")
-                        return True
-                except Exception:
-                    log.debug(
-                        "Could not poll library refresh status (may not be supported by this Jellyfin version)",
-                        exc_info=False,
-                    )
-                    # If polling doesn't work, just wait a bit anyway
-                    await asyncio.sleep(poll_interval)
-                    continue
-                await asyncio.sleep(poll_interval)
-        log.warning("Jellyfin library refresh timed out after %s seconds", timeout_seconds)
-        return False
 
     # --- playlist management ---
 

@@ -10,6 +10,7 @@ from app.models.platform_link import PlatformLink
 from app.models.synced_playlist import SyncedPlaylist, SyncedPlaylistTrack
 from app.models.track import Track
 from app.models.user import User
+from app.platforms.base import PlaylistInfo
 from app.platforms.registry import PlatformRegistry
 from app.services.download import DownloadRequest, DownloadResult, DownloadService
 from app.services.jellyfin import JellyfinClient
@@ -81,7 +82,7 @@ class SyncEngine:
         user: User,
         synced: SyncedPlaylist,
         link: PlatformLink,
-        credentials: dict,
+        playlist: PlaylistInfo,
         playlist_track_paths: dict[int, list[str | None]],
         download_queue: list[tuple[DownloadRequest, int]],
         source_id_to_idx: dict[str, int],
@@ -92,21 +93,6 @@ class SyncEngine:
         Populates playlist_track_paths, download_queue, source_id_to_idx, and source_id_slots
         in-place. Does not commit; that remains the caller's responsibility.
         """
-        connector = self.registry.get(link.platform)
-        # Fetch all playlists for this platform and find the one matching synced
-        all_playlists = await connector.fetch_playlists(credentials)
-        playlist = next(
-            (p for p in all_playlists if p.playlist_id == synced.platform_playlist_id),
-            None,
-        )
-        if playlist is None:
-            log.warning(
-                "_sync_one_playlist: upstream playlist %s not found for platform=%s",
-                synced.platform_playlist_id,
-                link.platform,
-            )
-            return
-
         user_id = user.id
         playlist_track_paths[synced.id] = [None] * len(playlist.tracks)
         db.execute(delete(SyncedPlaylistTrack).where(SyncedPlaylistTrack.synced_playlist_id == synced.id))
@@ -114,6 +100,20 @@ class SyncEngine:
         for pos, track in enumerate(playlist.tracks):
             canonical = track
             if link.platform == "spotify":
+                # Check DB first by title+artist to avoid a YouTube search for already-known tracks.
+                existing_by_meta = db.scalar(
+                    select(Track).where(Track.title == track.title, Track.artist == track.artist)
+                )
+                if existing_by_meta:
+                    playlist_track_paths[synced.id][pos] = existing_by_meta.file_path
+                    db.add(
+                        SyncedPlaylistTrack(
+                            synced_playlist_id=synced.id,
+                            track_id=existing_by_meta.id,
+                            position=pos,
+                        )
+                    )
+                    continue
                 query = f"{track.title} {track.artist}"
                 youtube_match = await self.registry.get("youtube").search_track(query)
                 if youtube_match:
@@ -316,7 +316,7 @@ class SyncEngine:
                         user=user,
                         synced=synced,
                         link=link,
-                        credentials=credentials,
+                        playlist=playlist,
                         playlist_track_paths=playlist_track_paths,
                         download_queue=download_queue,
                         source_id_to_idx=source_id_to_idx,
@@ -411,8 +411,6 @@ class SyncEngine:
             if any_success:
                 log.info("Refreshing Jellyfin library after new downloads (user_id=%s)", user_id)
                 await self.jellyfin_client.refresh_library()
-                log.info("Waiting for Jellyfin library refresh to complete (user_id=%s)", user_id)
-                await self.jellyfin_client.wait_for_library_refresh()
         else:
             log.info("Sync user_id=%s: no new downloads queued", user_id)
 
@@ -486,12 +484,23 @@ class SyncEngine:
                 source_id_to_idx: dict[str, int] = {}
                 source_id_slots: dict[str, list[tuple[int, int]]] = {}
 
+                all_playlists = await connector.fetch_playlists(credentials)
+                playlist = next(
+                    (p for p in all_playlists if p.playlist_id == synced.platform_playlist_id),
+                    None,
+                )
+                if not playlist:
+                    log.warning(
+                        "Single-playlist sync: upstream playlist %s not found", synced.platform_playlist_id
+                    )
+                    return
+
                 await self._sync_one_playlist(
                     db=db,
                     user=user,
                     synced=synced,
                     link=link,
-                    credentials=credentials,
+                    playlist=playlist,
                     playlist_track_paths=playlist_track_paths,
                     download_queue=download_queue,
                     source_id_to_idx=source_id_to_idx,
@@ -522,8 +531,6 @@ class SyncEngine:
                     )
                     if any_success:
                         await self.jellyfin_client.refresh_library()
-                        log.info("Waiting for Jellyfin library refresh to complete for single playlist")
-                        await self.jellyfin_client.wait_for_library_refresh()
 
                 await self._push_playlists_to_jellyfin([synced], playlist_track_paths, user, db)
                 log.info("Single-playlist sync finished: playlist_id=%s user_id=%s", synced_playlist_id, user_id)
