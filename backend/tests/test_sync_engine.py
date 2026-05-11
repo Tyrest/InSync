@@ -364,6 +364,7 @@ def _build_sync_engine_with_session(session: Session, playlist_info: "PlaylistIn
         side_effect=lambda *, credentials, client_id, client_secret: credentials
     )
     mock_connector.fetch_playlists = AsyncMock(return_value=[playlist_info])
+    mock_connector.fetch_playlist = AsyncMock(return_value=playlist_info)
     mock_connector.search_track = AsyncMock(return_value=None)
 
     mock_registry = MagicMock()

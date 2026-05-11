@@ -484,11 +484,7 @@ class SyncEngine:
                 source_id_to_idx: dict[str, int] = {}
                 source_id_slots: dict[str, list[tuple[int, int]]] = {}
 
-                all_playlists = await connector.fetch_playlists(credentials)
-                playlist = next(
-                    (p for p in all_playlists if p.playlist_id == synced.platform_playlist_id),
-                    None,
-                )
+                playlist = await connector.fetch_playlist(credentials, synced.platform_playlist_id)
                 if not playlist:
                     log.warning(
                         "Single-playlist sync: upstream playlist %s not found", synced.platform_playlist_id
